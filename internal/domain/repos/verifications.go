@@ -10,7 +10,7 @@ import (
 	"github.com/invopop/couch"
 	"github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.kyb/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/models"
 )
 
 // Verifications is the case store, backed by a single CouchDB database

@@ -5,7 +5,7 @@
 # public repository. Flux image automation in deploy-production-apps picks up
 # the new tag and rolls the deployment.
 #
-# One-time setup: after the first push, set the `gobl.kyb` package to
+# One-time setup: after the first push, set the `gobl.verify` package to
 # **public** in its GitHub package settings so the cluster (and Flux) can pull
 # and scan it without credentials. The Dockerfile's
 # org.opencontainers.image.source label links the package to this repo.

@@ -12,8 +12,8 @@ import (
 	"github.com/invopop/gobl/org"
 	"github.com/invopop/gobl/tax"
 
-	"github.com/invopop/gobl.kyb/internal/domain/models"
-	"github.com/invopop/gobl.kyb/internal/domain/provider"
+	"github.com/invopop/gobl.verify/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/provider"
 )
 
 // NumberSource records where a subject's registration number came

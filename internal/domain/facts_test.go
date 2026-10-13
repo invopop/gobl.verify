@@ -11,7 +11,7 @@ import (
 	"github.com/invopop/gobl/org"
 	"github.com/invopop/gobl/tax"
 
-	"github.com/invopop/gobl.kyb/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain"
 )
 
 func party(mods ...func(*org.Party)) *org.Party {

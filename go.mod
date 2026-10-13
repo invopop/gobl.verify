@@ -1,4 +1,4 @@
-module github.com/invopop/gobl.kyb
+module github.com/invopop/gobl.verify
 
 go 1.25.0
 

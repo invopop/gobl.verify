@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/invopop/gobl.kyb/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain"
 )
 
 // whoCacheControl allows the authenticated caller to cache the static

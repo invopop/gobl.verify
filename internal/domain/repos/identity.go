@@ -14,14 +14,14 @@ import (
 	"github.com/invopop/gobl/net"
 	"github.com/invopop/gobl/org"
 
-	"github.com/invopop/gobl.kyb/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/models"
 )
 
 // The identity is loaded from and scaffolded onto disk. The on-disk
 // layout matches gobl.dev's node convention so operators get a
 // familiar mental model:
 //
-//	~/.config/gobl.kyb/
+//	~/.config/gobl.verify/
 //	├── private.jwk        active signing key (mode 0600)
 //	├── party.json         the verifier's own org.Party (served at /who)
 //	└── keys/<kid>.json    each published JWK (served at /keys/<kid>)

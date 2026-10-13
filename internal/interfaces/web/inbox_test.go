@@ -16,9 +16,9 @@ import (
 	"github.com/invopop/gobl/org"
 	"github.com/invopop/gobl/tax"
 
-	"github.com/invopop/gobl.kyb/internal/domain"
-	"github.com/invopop/gobl.kyb/internal/domain/models"
-	"github.com/invopop/gobl.kyb/internal/domain/provider"
+	"github.com/invopop/gobl.verify/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/provider"
 )
 
 func TestInboxOpensASessionForARegisteredParty(t *testing.T) {
@@ -51,7 +51,7 @@ func TestInboxPrefillsTheProviderSearch(t *testing.T) {
 	assert.Equal(t, "ES", string(req.Subject.Country))
 	assert.Equal(t, "B12345674", req.Subject.TaxCode)
 	assert.Equal(t, "alice@example.com", req.ContactEmail)
-	assert.Equal(t, "https://kyb.example/webhooks/didit", req.CallbackURL)
+	assert.Equal(t, "https://kyb.example/webhooks/mock", req.CallbackURL)
 	assert.Equal(t, string(f.subAddr), req.Subject.Context["gobl_address"])
 }
 
@@ -248,8 +248,8 @@ func TestReEndorsementAfterApprovalIsFree(t *testing.T) {
 	f := newFixture(t)
 	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
 	require.Equal(t, http.StatusOK, f.approve(verifiedCompany()).StatusCode)
-	require.Equal(t, models.StatusDelivered, f.record().Status)
-	require.Len(t, f.sender.records(), 1)
+	require.Equal(t, models.StatusVerified, f.record().Status)
+	require.Len(t, f.endorsements(), 1)
 
 	edited := f.newParty(func(p *org.Party) {
 		p.Websites = []*org.Website{{URL: "https://acme.example"}}
@@ -257,9 +257,16 @@ func TestReEndorsementAfterApprovalIsFree(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(edited)).StatusCode)
 
 	assert.Equal(t, 1, f.provider.Sessions(), "no new check")
-	sent := f.sender.records()
-	require.Len(t, sent, 2, "the edited envelope is countersigned and delivered again")
-	assert.Equal(t, models.StatusDelivered, f.record().Status)
+	assert.Equal(t, models.StatusVerified, f.record().Status)
+
+	// The endorsement is reissued over the newer envelope rather than
+	// accumulating beside the old one.
+	sent := f.endorsements()
+	require.Len(t, sent, 1)
+	require.NotNil(t, sent[0].Head.Digest)
+	assert.Equal(t, f.record().EnvelopeDigest,
+		string(sent[0].Head.Digest.Algorithm)+":"+sent[0].Head.Digest.Value,
+		"the endorsement covers the party's current document")
 }
 
 // A decline is not retryable by re-posting the same company details.

@@ -15,8 +15,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/invopop/gobl.kyb/internal/domain"
-	"github.com/invopop/gobl.kyb/internal/domain/repos"
+	"github.com/invopop/gobl.verify/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain/repos"
 )
 
 func discardLogger() *slog.Logger {

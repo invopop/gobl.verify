@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/invopop/gobl.kyb/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/models"
 )
 
 // The payment stage.

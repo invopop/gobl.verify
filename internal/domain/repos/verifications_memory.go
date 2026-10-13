@@ -10,7 +10,7 @@ import (
 
 	"github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.kyb/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/models"
 )
 
 // MemoryVerifications is a thread-safe in-process case store for tests

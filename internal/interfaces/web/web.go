@@ -1,7 +1,8 @@
-// Package web is the HTTP transport adapter for the KYB verification
-// service. It exposes the standard GOBL Net well-known endpoints
-// (inbox / who / keys / jwks), the provider callback, and the
-// human-facing status page behind the emailed link.
+// Package web is the HTTP transport adapter for the verifier. It
+// exposes the standard GOBL Net well-known endpoints (inbox / who /
+// keys / jwks), the route a subject collects its endorsement from, and
+// whatever routes the configured provider contributes — a confirmation
+// page, a callback, or neither.
 //
 // Three different authentication schemes meet here, and they are not
 // interchangeable. The who and inbox endpoints take a bearer request
@@ -23,7 +24,7 @@ import (
 
 	goblnet "github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.kyb/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain"
 )
 
 // inboxMaxBody caps the request body read by the inbox handler.
@@ -42,7 +43,12 @@ func NewMux(setup *domain.Setup, log *slog.Logger) http.Handler {
 	mux.HandleFunc("GET "+goblnet.WhoPath, requireAuth(setup, log, handleWho(setup, log)))
 	mux.HandleFunc("GET "+goblnet.KeysPath+"/{kid}", handleKey(setup, log))
 	mux.HandleFunc("GET "+goblnet.JWKSPath, handleJWKS(setup, log))
-	mux.HandleFunc("POST "+setup.WebhookPath(), handleWebhook(setup, log))
+	mux.HandleFunc("GET "+VerificationPath, requireAuth(setup, log, handleCollect(setup, log)))
+	if cb, ok := setup.Provider().(CallbackProvider); ok {
+		mux.HandleFunc("POST "+cb.CallbackPath(), handleWebhook(setup, log))
+	}
+	mux.HandleFunc("GET /confirm/{token}", handleConfirmPage(setup, log))
+	mux.HandleFunc("POST /confirm/{token}", handleConfirmSubmit(setup, log))
 	mux.HandleFunc("GET /status/{token}", handleStatus(setup, log))
 	mux.HandleFunc("GET /healthz", handleHealth())
 

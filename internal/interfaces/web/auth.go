@@ -8,7 +8,7 @@ import (
 
 	goblnet "github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.kyb/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain"
 )
 
 // requesterKey is the context key under which requireAuth stores the

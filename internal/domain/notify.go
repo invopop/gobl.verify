@@ -9,8 +9,8 @@ import (
 
 	"github.com/invopop/gobl/org"
 
-	"github.com/invopop/gobl.kyb/internal/domain/mailer"
-	"github.com/invopop/gobl.kyb/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/mailer"
+	"github.com/invopop/gobl.verify/internal/domain/models"
 )
 
 // The transactional emails. Plain text only: their job is to carry a
@@ -27,7 +27,7 @@ import (
 var startText = template.Must(template.New("start").Parse(
 	`Hello{{if .Name}} {{.Name}}{{end}},
 
-A business verification for the GOBL Net identity "{{.Address}}" was
+A verification of the GOBL Net identity "{{.Address}}" was
 requested through the registration authority {{.Authority}}.
 
 To complete it, open the link below and follow the steps. You will be
@@ -49,7 +49,7 @@ You can follow the progress of the verification here:
 var inReviewText = template.Must(template.New("in_review").Parse(
 	`Hello{{if .Name}} {{.Name}}{{end}},
 
-The business verification for "{{.Address}}" has been submitted and is
+The verification of "{{.Address}}" has been submitted and is
 now with an analyst for review.
 
 There is nothing further for you to do, and starting the verification
@@ -61,17 +61,16 @@ result.
 -- {{.Verifier}}
 `))
 
-var approvedText = template.Must(template.New("approved").Parse(
+var verifiedText = template.Must(template.New("verified").Parse(
 	`Hello{{if .Name}} {{.Name}}{{end}},
 
-The business verification for "{{.Address}}" has been completed
-successfully.
+The verification for "{{.Address}}" has been completed successfully.
 
-The verification has been countersigned and sent to the registration
-authority {{.Authority}}, which will deliver the endorsed identity back
-to your own inbox. One step remains and it is yours: publish that
-endorsed document at your identity endpoint. Until you do, other
-participants will still see you as registered but unverified.
+Your identity has been countersigned and is ready to collect. Your
+platform does the rest: it picks up the endorsement, registers it with
+{{.Authority}}, and publishes the result at your identity endpoint.
+Until that happens other participants will still see you as registered
+but unverified.
 
   {{.StatusURL}}
 
@@ -81,7 +80,7 @@ participants will still see you as registered but unverified.
 var declinedText = template.Must(template.New("declined").Parse(
 	`Hello{{if .Name}} {{.Name}}{{end}},
 
-The business verification for "{{.Address}}" could not be completed.
+The verification of "{{.Address}}" could not be completed.
 
 Your identity remains registered with {{.Authority}} and can still
 receive documents; it is not verified, so it cannot send them.
@@ -97,7 +96,7 @@ will look into it.
 var expiredText = template.Must(template.New("expired").Parse(
 	`Hello{{if .Name}} {{.Name}}{{end}},
 
-The business verification for "{{.Address}}" was started but never
+The verification of "{{.Address}}" was started but never
 completed, and the link has now expired.
 
 Nothing has changed: your identity is still registered with
@@ -117,12 +116,12 @@ var opsAlertText = template.Must(template.New("ops").Parse(
 
   {{.Detail}}
 
-Inspect with:  gobl.kyb status {{.Address}}
+Inspect with:  gobl.verify status {{.Address}}
 `))
 
 // notifyStart sends the hosted verification link.
 func (d *Verifications) notifyStart(ctx context.Context, rec *models.Verification) error {
-	msg := d.render(rec, startText, "Verify the business behind "+string(rec.Address), map[string]string{
+	msg := d.render(rec, startText, "Verify the identity of "+string(rec.Address), map[string]string{
 		"SessionURL": rec.Provider.URL,
 	})
 	return d.send(ctx, rec, msg)
@@ -138,10 +137,10 @@ func (d *Verifications) notifyInReview(ctx context.Context, rec *models.Verifica
 	_ = d.send(ctx, rec, msg)
 }
 
-// notifyApproved tells the subject the endorsement is on its way, and
-// that publishing it is their step.
-func (d *Verifications) notifyApproved(ctx context.Context, rec *models.Verification) {
-	msg := d.render(rec, approvedText, "Verification of "+string(rec.Address)+" is complete", nil)
+// notifyVerified tells the subject the endorsement is ready, and that
+// collecting and publishing it is their platform's step.
+func (d *Verifications) notifyVerified(ctx context.Context, rec *models.Verification) {
+	msg := d.render(rec, verifiedText, "Verification of "+string(rec.Address)+" is complete", nil)
 	_ = d.send(ctx, rec, msg)
 }
 
@@ -184,7 +183,7 @@ func (d *Verifications) alertOps(ctx context.Context, rec *models.Verification, 
 	defer cancel()
 	if err := d.mailer.Send(sendCtx, mailer.Message{
 		To:      d.opsEmail,
-		Subject: "[gobl.kyb] " + string(rec.Status) + ": " + string(rec.Address),
+		Subject: "[gobl.verify] " + string(rec.Status) + ": " + string(rec.Address),
 		Text:    b.String(),
 	}); err != nil {
 		d.log.Warn("ops_alert.send_failed", "address", string(rec.Address), "error", err.Error())

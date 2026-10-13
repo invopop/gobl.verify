@@ -21,13 +21,13 @@ import (
 	"github.com/invopop/gobl/org"
 	"github.com/invopop/gobl/tax"
 
-	"github.com/invopop/gobl.kyb/internal/domain"
-	"github.com/invopop/gobl.kyb/internal/domain/mailer"
-	"github.com/invopop/gobl.kyb/internal/domain/models"
-	"github.com/invopop/gobl.kyb/internal/domain/provider"
-	"github.com/invopop/gobl.kyb/internal/domain/provider/mock"
-	"github.com/invopop/gobl.kyb/internal/domain/repos"
-	"github.com/invopop/gobl.kyb/internal/interfaces/web"
+	"github.com/invopop/gobl.verify/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain/mailer"
+	"github.com/invopop/gobl.verify/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/provider"
+	"github.com/invopop/gobl.verify/internal/domain/provider/mock"
+	"github.com/invopop/gobl.verify/internal/domain/repos"
+	"github.com/invopop/gobl.verify/internal/interfaces/web"
 )
 
 // mockFetcher serves a map[url]bytes, with optional per-URL errors.
@@ -50,42 +50,6 @@ func (m *mockFetcher) Fetch(_ context.Context, url string, _ http.Header) ([]byt
 
 func (m *mockFetcher) Post(_ context.Context, _ string, _ []byte, _ http.Header) error {
 	return goblnet.ErrFetchFailed
-}
-
-// mockSender records deliveries to the authority's inbox.
-type mockSender struct {
-	mu   sync.Mutex
-	sent []sentEnvelope
-	err  error
-}
-
-type sentEnvelope struct {
-	to  goblnet.Address
-	env *gobl.Envelope
-}
-
-func (m *mockSender) Send(_ context.Context, addr goblnet.Address, env *gobl.Envelope) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.err != nil {
-		return m.err
-	}
-	m.sent = append(m.sent, sentEnvelope{to: addr, env: env})
-	return nil
-}
-
-func (m *mockSender) setErr(err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.err = err
-}
-
-func (m *mockSender) records() []sentEnvelope {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]sentEnvelope, len(m.sent))
-	copy(out, m.sent)
-	return out
 }
 
 // mockMailer records messages.
@@ -136,7 +100,6 @@ type fixture struct {
 	regAddr  goblnet.Address
 	fetcher  *mockFetcher
 	store    *repos.MemoryVerifications
-	sender   *mockSender
 	mail     *mockMailer
 	provider *mock.Provider
 	setup    *domain.Setup
@@ -172,14 +135,13 @@ func newFixture(t *testing.T, mods ...func(*domain.Options)) *fixture {
 		goblnet.WithAuthorities(regAddr),
 	)
 	store := repos.NewMemoryVerifications()
-	send := &mockSender{}
 	mail := &mockMailer{}
 	prov := mock.New()
 
 	opts := domain.Options{
 		Authority:             regAddr,
 		PublicBaseURL:         "https://kyb.example",
-		WebhookPath:           "/webhooks/didit",
+		WebhookPath:           "/webhooks/mock",
 		Match:                 domain.DefaultMatchPolicy(),
 		PaymentMode:           "none",
 		KYBResultTTL:          365 * 24 * time.Hour,
@@ -196,7 +158,6 @@ func newFixture(t *testing.T, mods ...func(*domain.Options)) *fixture {
 		Identity:      verifier,
 		Verifications: store,
 		Client:        client,
-		Sender:        send,
 		Mailer:        mail,
 		Provider:      prov,
 		Options:       opts,
@@ -207,7 +168,7 @@ func newFixture(t *testing.T, mods ...func(*domain.Options)) *fixture {
 		t: t, verifier: verifier,
 		subject: subKey, subAddr: subAddr,
 		registry: regKey, regAddr: regAddr,
-		fetcher: fetcher, store: store, sender: send, mail: mail,
+		fetcher: fetcher, store: store, mail: mail,
 		provider: prov, setup: setup, mux: mux,
 	}
 }
@@ -285,7 +246,7 @@ func (f *fixture) callback(rec *models.Verification, status provider.Status) *ht
 func (f *fixture) callbackWith(ev provider.Event) *http.Response {
 	f.t.Helper()
 	f.provider.Enqueue(ev)
-	return f.do(http.MethodPost, "/webhooks/didit", []byte(`{}`), "", "application/json")
+	return f.do(http.MethodPost, "/webhooks/mock", []byte(`{}`), "", "application/json")
 }
 
 // record returns the stored case for the subject.
@@ -361,4 +322,26 @@ func (f *fixture) due(rec *models.Verification) {
 	cur.NextPollAt = &past
 	cur.ReconcileLeaseUntil = nil
 	require.NoError(f.t, f.store.Put(context.Background(), cur))
+}
+
+// endorsements returns the countersigned envelopes this service has
+// issued for the subject — zero or one, since an endorsement replaces
+// its predecessor rather than accumulating.
+//
+// This replaces what used to be an assertion on outbound deliveries.
+// The service no longer sends anything: it signs, stores, and waits to
+// be asked.
+func (f *fixture) endorsements() []*gobl.Envelope {
+	f.t.Helper()
+	rec, err := f.store.Get(context.Background(), f.subAddr)
+	if err != nil || rec.Countersigned == nil {
+		return nil
+	}
+	return []*gobl.Envelope{rec.Countersigned}
+}
+
+// collect fetches the endorsement the way a subject's platform would.
+func (f *fixture) collect() *http.Response {
+	f.t.Helper()
+	return f.do(http.MethodGet, web.VerificationPath, nil, f.bearer(), "")
 }

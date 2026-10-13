@@ -38,15 +38,11 @@ const (
 	// stack so a process that dies mid-check leaves a case the
 	// reconciler can pick up, instead of an approval nobody acts on.
 	StatusMatching Status = "matching"
-	// StatusApproved means the provider approved and the match
-	// passed. A countersignature is owed to the authority.
-	StatusApproved Status = "approved"
-	// StatusDelivered means the countersigned envelope was accepted
-	// by the authority's inbox.
-	StatusDelivered Status = "delivered"
-	// StatusDeliveryFailed means the case was approved but delivery
-	// did not land. Retryable, and retried.
-	StatusDeliveryFailed Status = "delivery_failed"
+	// StatusVerified means the provider approved, the match passed,
+	// and the countersigned envelope is ready for the subject to
+	// collect. It is terminal: this service does not deliver the
+	// result anywhere, so there is no step after it.
+	StatusVerified Status = "verified"
 	// StatusDeclined means the provider refused the company.
 	StatusDeclined Status = "declined"
 	// StatusMismatch means the provider approved a company that is not
@@ -67,7 +63,7 @@ const (
 // after a decline without an operator saying so.
 func (s Status) Terminal() bool {
 	switch s {
-	case StatusDelivered, StatusDeclined, StatusMismatch, StatusExpired:
+	case StatusVerified, StatusDeclined, StatusMismatch, StatusExpired:
 		return true
 	}
 	return false
@@ -178,10 +174,11 @@ type Verification struct {
 	// operators and for the match check.
 	Facts SubjectFacts `json:"facts"`
 
-	// Envelope is the registered envelope as received, never mutated:
-	// every delivery countersigns a fresh copy. It is replaced by any
-	// later submission carrying the same facts, so the endorsement
-	// always lands on the party's current document.
+	// Envelope is the registered envelope as received, never mutated.
+	// It is replaced by any later submission carrying the same facts,
+	// so an endorsement is always issued over the party's current
+	// document, and it is what the facts are re-derived from before
+	// anything is signed.
 	Envelope       *gobl.Envelope `json:"envelope"`
 	EnvelopeUUID   uuid.UUID      `json:"envelope_uuid"`
 	EnvelopeDigest string         `json:"envelope_digest"`
@@ -217,13 +214,19 @@ type Verification struct {
 	// ReviewStartedAt stamps entry into analyst review, so a case
 	// stuck there can be nagged about.
 	ReviewStartedAt *time.Time `json:"review_started_at,omitempty"`
-	ApprovedAt      *time.Time `json:"approved_at,omitempty"`
 	DeclinedAt      *time.Time `json:"declined_at,omitempty"`
 
-	DeliveryAttempts  int        `json:"delivery_attempts,omitempty"`
-	LastDeliveryAt    *time.Time `json:"last_delivery_at,omitempty"`
-	LastDeliveryError string     `json:"last_delivery_error,omitempty"`
-	DeliveredAt       *time.Time `json:"delivered_at,omitempty"`
+	// Countersigned is the endorsement this service issued: the
+	// received envelope with our countersignature added, stored so the
+	// subject can collect it.
+	//
+	// It is stored rather than regenerated because an endorsement is
+	// one act with one lifetime. Re-signing on every read would mint a
+	// fresh expiry each time and quietly make the endorsement
+	// immortal.
+	Countersigned *gobl.Envelope `json:"countersigned,omitempty"`
+	// VerifiedAt is when the countersignature was issued.
+	VerifiedAt *time.Time `json:"verified_at,omitempty"`
 
 	// NextPollAt paces the reconciler, and ReconcileLeaseUntil keeps
 	// two replicas from working the same case at once.

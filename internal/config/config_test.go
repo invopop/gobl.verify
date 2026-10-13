@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/invopop/gobl.kyb/internal/config"
+	"github.com/invopop/gobl.verify/internal/config"
 )
 
 func TestFromEnvReadsCouchParts(t *testing.T) {
@@ -17,7 +17,7 @@ func TestFromEnvReadsCouchParts(t *testing.T) {
 
 	cfg := config.FromEnv()
 	assert.Equal(t, "/etc/kyb", cfg.ConfigDir)
-	assert.Equal(t, "gobl_kyb", cfg.CouchDatabase, "default database name")
+	assert.Equal(t, "gobl_verify", cfg.CouchDatabase, "default database name")
 	assert.Equal(t, "https://kyb.example", cfg.PublicBaseURL)
 	assert.Equal(t, config.DefaultAuthority, cfg.Authority, "default authority")
 

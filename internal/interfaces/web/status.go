@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/invopop/gobl.kyb/internal/domain"
-	"github.com/invopop/gobl.kyb/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain/models"
 )
 
 // statusPage is the single template behind the emailed status link.
@@ -89,12 +89,12 @@ func viewFor(rec *models.Verification) statusView {
 	case models.StatusReceived, models.StatusAwaitingPayment:
 		return statusView{
 			Title:   "Preparing your verification",
-			Message: "We are setting up the business verification. Check back in a moment.",
+			Message: "We are setting up the verification. Check back in a moment.",
 		}
 	case models.StatusSessionOpen:
 		return statusView{
 			Title:     "Verification in progress",
-			Message:   "Your business verification has been started but not yet completed. Use the button below to continue where you left off.",
+			Message:   "Your verification has been started but not yet completed. Use the button below to continue where you left off.",
 			ActionURL: rec.Provider.URL,
 		}
 	case models.StatusInReview:
@@ -107,15 +107,10 @@ func viewFor(rec *models.Verification) statusView {
 			Title:   "Almost there",
 			Message: "The checks are complete and we are finishing the last step. This usually takes a few seconds.",
 		}
-	case models.StatusApproved, models.StatusDeliveryFailed:
+	case models.StatusVerified:
 		return statusView{
 			Title:   "Verified",
-			Message: "Your business has been verified. We are delivering the endorsement to the registration authority; once it reaches your inbox, publish it at your identity endpoint to complete the process.",
-		}
-	case models.StatusDelivered:
-		return statusView{
-			Title:   "Verified",
-			Message: "Your business has been verified and the endorsement has been delivered to the registration authority. One step remains and it is yours: publish the endorsed identity your platform received, so that other participants can see it.",
+			Message: "This identity has been verified and the endorsement is ready. Your platform collects it, registers it with the authority, and publishes the result — nothing further is needed from you.",
 		}
 	case models.StatusDeclined, models.StatusMismatch:
 		return statusView{

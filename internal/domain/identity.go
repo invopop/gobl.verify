@@ -15,7 +15,7 @@ import (
 	"github.com/invopop/gobl/head"
 	goblnet "github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.kyb/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/models"
 )
 
 // DefaultEndorsementTTL is the lifetime of every verifier

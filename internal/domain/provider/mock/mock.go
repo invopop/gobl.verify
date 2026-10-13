@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/invopop/gobl.kyb/internal/domain/provider"
+	"github.com/invopop/gobl.verify/internal/domain/provider"
 )
 
 // Name identifies this provider.
@@ -59,6 +59,11 @@ func New() *Provider {
 
 // Name identifies the implementation.
 func (p *Provider) Name() provider.Name { return Name }
+
+// CallbackPath makes the mock a callback-driven provider, so the
+// webhook route stays covered by the tests even though the only
+// provider shipped here reports progress by being asked.
+func (p *Provider) CallbackPath() string { return "/webhooks/mock" }
 
 // CreateSession records the request and hands back a session.
 func (p *Provider) CreateSession(_ context.Context, req provider.SessionRequest) (*provider.Session, error) {

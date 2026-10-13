@@ -1,7 +1,7 @@
 // Package config defines the runtime configuration for the KYB
 // verification service. Values are resolved from environment variables
 // (the mechanism the cluster uses to inject config and secrets) and may
-// be overridden by the command-line flags in cmd/gobl.kyb.
+// be overridden by the command-line flags in cmd/gobl.verify.
 package config
 
 import (
@@ -24,8 +24,10 @@ const DefaultAuthority = "lookup.gobl.org"
 
 // Provider names selectable through PROVIDER.
 const (
-	// ProviderDidit runs real KYB checks through didit.me.
-	ProviderDidit = "didit"
+	// ProviderEmail confirms control of the party's published email
+	// address and records a declaration. Sandbox grade only: control
+	// of a mailbox says nothing about who a company is.
+	ProviderEmail = "email"
 	// ProviderMock drives the state machine without spending money —
 	// for local development and the test suite.
 	ProviderMock = "mock"
@@ -42,11 +44,6 @@ const (
 	// PaymentCharge takes a payment before the check runs.
 	PaymentCharge = "charge"
 )
-
-// DefaultWebhookPath is where the provider posts session updates. It is
-// configurable, but the path is never a security control — the payload
-// signature is.
-const DefaultWebhookPath = "/webhooks/didit"
 
 // Config holds the options shared by the serve and operator commands.
 //
@@ -87,24 +84,6 @@ type Config struct {
 
 	// Provider selects the KYB provider implementation.
 	Provider string
-	// DiditBaseURL is the provider API root.
-	DiditBaseURL string
-	// DiditAPIKey authenticates API calls (the x-api-key header).
-	DiditAPIKey string
-	// DiditWorkflowID names the KYB workflow configured in the
-	// provider's console.
-	DiditWorkflowID string
-	// DiditWebhookSecret is the HMAC key for callback signatures.
-	DiditWebhookSecret string
-	// DiditWebhookSecretPrevious lets a secret rotation overlap: both
-	// are accepted while the change propagates.
-	DiditWebhookSecretPrevious string
-	// DiditWebhookPath is the callback route.
-	DiditWebhookPath string
-	// DiditTimeout bounds a single provider API call.
-	DiditTimeout time.Duration
-	// WebhookClockSkew bounds how stale a callback timestamp may be.
-	WebhookClockSkew time.Duration
 
 	// SupportedCountries limits which registry countries are accepted.
 	// Empty allows every country. Rejecting at the inbox matters: an
@@ -183,21 +162,13 @@ func FromEnv() Config {
 		CouchPort:     Env("COUCHDB_PORT", "5984"),
 		CouchUsername: Env("COUCHDB_USERNAME", "admin"),
 		CouchPassword: Env("COUCHDB_PASSWORD", ""),
-		CouchDatabase: Env("COUCHDB_DATABASE", "gobl_kyb"),
+		CouchDatabase: Env("COUCHDB_DATABASE", "gobl_verify"),
 
 		HTTPPort:      httpPortFromEnv(),
 		PublicBaseURL: Env("PUBLIC_BASE_URL", ""),
 		Authority:     Env("AUTHORITY", DefaultAuthority),
 
-		Provider:                   Env("PROVIDER", ProviderDidit),
-		DiditBaseURL:               Env("DIDIT_BASE_URL", "https://verification.didit.me"),
-		DiditAPIKey:                Env("DIDIT_API_KEY", ""),
-		DiditWorkflowID:            Env("DIDIT_WORKFLOW_ID", ""),
-		DiditWebhookSecret:         Env("DIDIT_WEBHOOK_SECRET", ""),
-		DiditWebhookSecretPrevious: Env("DIDIT_WEBHOOK_SECRET_PREVIOUS", ""),
-		DiditWebhookPath:           Env("DIDIT_WEBHOOK_PATH", DefaultWebhookPath),
-		DiditTimeout:               EnvDuration("DIDIT_TIMEOUT", 20*time.Second),
-		WebhookClockSkew:           EnvDuration("WEBHOOK_CLOCK_SKEW", 5*time.Minute),
+		Provider: Env("PROVIDER", ProviderEmail),
 
 		SupportedCountries: EnvList("SUPPORTED_COUNTRIES"),
 		MatchNameThreshold: EnvFloat("MATCH_NAME_THRESHOLD", 0.90),
@@ -234,17 +205,7 @@ func FromEnv() Config {
 // or CouchDB: those fail loudly on their own when loaded.
 func (c Config) Validate() error {
 	switch c.Provider {
-	case ProviderMock:
-	case ProviderDidit:
-		if c.DiditAPIKey == "" {
-			return errors.New("config: DIDIT_API_KEY is required with PROVIDER=didit")
-		}
-		if c.DiditWorkflowID == "" {
-			return errors.New("config: DIDIT_WORKFLOW_ID is required with PROVIDER=didit")
-		}
-		if c.DiditWebhookSecret == "" {
-			return errors.New("config: DIDIT_WEBHOOK_SECRET is required with PROVIDER=didit")
-		}
+	case ProviderEmail, ProviderMock:
 	default:
 		return fmt.Errorf("config: unknown PROVIDER %q", c.Provider)
 	}
@@ -257,9 +218,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: unknown PAYMENT_MODE %q", c.PaymentMode)
 	}
 
-	// The provider has to reach the callback, and it will not post to
-	// plain HTTP. An http:// base URL is therefore a silently broken
-	// deployment: sessions open and never resolve.
+	// The confirmation links are served from this base, and a subject
+	// following one over plain HTTP would hand a bearer token to the
+	// network.
 	if c.PublicBaseURL != "" && c.Provider != ProviderMock {
 		u, err := url.Parse(c.PublicBaseURL)
 		if err != nil {
@@ -277,11 +238,6 @@ func (c Config) Validate() error {
 		return errors.New("config: EMAIL_FROM is required when SMTP_HOST is set")
 	}
 	return nil
-}
-
-// WebhookURL is the callback address handed to the provider.
-func (c Config) WebhookURL(baseURL string) string {
-	return strings.TrimSuffix(baseURL, "/") + c.DiditWebhookPath
 }
 
 // CouchDBURL resolves the CouchDB connection URL: the explicit

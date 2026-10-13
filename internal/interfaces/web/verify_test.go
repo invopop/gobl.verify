@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -9,12 +10,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/invopop/gobl"
 	"github.com/invopop/gobl/head"
 	goblnet "github.com/invopop/gobl/net"
 	"github.com/invopop/gobl/org"
 
-	"github.com/invopop/gobl.kyb/internal/domain/models"
-	"github.com/invopop/gobl.kyb/internal/domain/provider"
+	"github.com/invopop/gobl.verify/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/provider"
+	"github.com/invopop/gobl.verify/internal/interfaces/web"
 )
 
 // The countersignature is the product. Its shape is what every
@@ -26,11 +29,10 @@ func TestApprovalProducesTheRightCountersignature(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, f.approve(verifiedCompany()).StatusCode)
 
-	sent := f.sender.records()
+	sent := f.endorsements()
 	require.Len(t, sent, 1)
-	assert.Equal(t, f.regAddr, sent[0].to, "the endorsement goes to the authority, not the subject")
 
-	env := sent[0].env
+	env := sent[0]
 	assert.Equal(t, before.EnvelopeUUID, env.Head.UUID, "the envelope identity must not change")
 	require.NotNil(t, env.Head.Digest)
 	assert.Equal(t, before.EnvelopeDigest,
@@ -54,7 +56,7 @@ func TestApprovalProducesTheRightCountersignature(t *testing.T) {
 	}
 	assert.Equal(t, 1, ours, "exactly one signature of our own")
 
-	assert.Equal(t, models.StatusDelivered, f.record().Status)
+	assert.Equal(t, models.StatusVerified, f.record().Status)
 }
 
 // Re-endorsing supersedes our own earlier signature and leaves
@@ -70,11 +72,13 @@ func TestReEndorsementSupersedesOnlyOurOwnSignature(t *testing.T) {
 	})
 	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(edited)).StatusCode)
 
-	sent := f.sender.records()
-	require.Len(t, sent, 2)
+	// An endorsement replaces its predecessor rather than accumulating,
+	// so there is one — over the newer envelope.
+	sent := f.endorsements()
+	require.Len(t, sent, 1)
 
 	var ours, theirs int
-	for _, sig := range sent[1].env.Signatures {
+	for _, sig := range sent[0].Signatures {
 		p, err := head.SignedPayload(sig)
 		require.NoError(t, err)
 		if p.Iss == string(f.verifier.Address()) {
@@ -125,7 +129,7 @@ func TestMismatchIsNeverCountersigned(t *testing.T) {
 
 			rec := f.record()
 			assert.Equal(t, models.StatusMismatch, rec.Status)
-			assert.Empty(t, f.sender.records(), "nothing is delivered")
+			assert.Empty(t, f.endorsements(), "nothing is endorsed")
 			require.NotNil(t, rec.Match)
 			assert.False(t, rec.Match.Passed)
 			assert.False(t, rec.Match.Reviewable, "a hard failure is not an operator's to release")
@@ -165,7 +169,7 @@ func TestDeclineIsNeverCountersigned(t *testing.T) {
 	require.Equal(t, http.StatusOK, f.callback(rec, provider.StatusDeclined).StatusCode)
 
 	assert.Equal(t, models.StatusDeclined, f.record().Status)
-	assert.Empty(t, f.sender.records())
+	assert.Empty(t, f.endorsements())
 }
 
 // Callbacks are retried, so the same event will arrive more than once.
@@ -188,7 +192,7 @@ func TestDuplicateCallbackIsANoOp(t *testing.T) {
 	require.Equal(t, http.StatusOK, f.callbackWith(ev).StatusCode)
 	require.Equal(t, http.StatusOK, f.callbackWith(ev).StatusCode)
 
-	assert.Len(t, f.sender.records(), 1, "a retried callback must not deliver twice")
+	assert.Len(t, f.endorsements(), 1, "a retried callback must not re-endorse")
 }
 
 // Retries arrive out of order. Applying an older status would walk the
@@ -218,7 +222,7 @@ func TestTerminalCaseIsNotDisturbedByALaterCallback(t *testing.T) {
 	f := newFixture(t)
 	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
 	require.Equal(t, http.StatusOK, f.approve(verifiedCompany()).StatusCode)
-	require.Equal(t, models.StatusDelivered, f.record().Status)
+	require.Equal(t, models.StatusVerified, f.record().Status)
 
 	rec := f.record()
 	require.Equal(t, http.StatusOK, f.callbackWith(provider.Event{
@@ -226,7 +230,7 @@ func TestTerminalCaseIsNotDisturbedByALaterCallback(t *testing.T) {
 		Status: provider.StatusDeclined, At: time.Now().UTC().Add(time.Hour),
 	}).StatusCode)
 
-	assert.Equal(t, models.StatusDelivered, f.record().Status)
+	assert.Equal(t, models.StatusVerified, f.record().Status)
 }
 
 // A late callback for an attempt that has since been superseded is
@@ -248,7 +252,7 @@ func TestCallbackForASupersededAttemptIsIgnored(t *testing.T) {
 		Status: provider.StatusApproved, At: time.Now().UTC(),
 	}).StatusCode)
 
-	assert.Empty(t, f.sender.records())
+	assert.Empty(t, f.endorsements())
 	assert.Equal(t, models.StatusSessionOpen, f.record().Status)
 }
 
@@ -298,34 +302,80 @@ func TestReconcilerRecoversADroppedCallback(t *testing.T) {
 	})
 	// No callback ever arrives. Time passes until the case is due a
 	// poll.
-	require.Empty(t, f.sender.records())
+	require.Empty(t, f.endorsements())
 	f.due(rec)
 
 	n, err := f.setup.Verifications().Reconcile(context.Background(), 10)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 
-	assert.Equal(t, models.StatusDelivered, f.record().Status)
-	assert.Len(t, f.sender.records(), 1)
+	assert.Equal(t, models.StatusVerified, f.record().Status)
+	assert.Len(t, f.endorsements(), 1)
 }
 
-// A delivery that fails is retried rather than lost — the check has
-// been paid for and it passed.
-func TestFailedDeliveryIsRetriedByTheReconciler(t *testing.T) {
+// Collection is the contract that replaced outbound delivery, and it
+// is what lets a verifier stay a signing service: the subject fetches
+// its own endorsement and registers it with the authority itself.
+func TestSubjectCollectsItsOwnEndorsement(t *testing.T) {
 	f := newFixture(t)
 	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
-
-	f.sender.setErr(errSendFailed{})
 	require.Equal(t, http.StatusOK, f.approve(verifiedCompany()).StatusCode)
-	require.Equal(t, models.StatusDeliveryFailed, f.record().Status)
 
-	f.sender.setErr(nil)
-	f.due(f.record())
+	resp := f.collect()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	_, err := f.setup.Verifications().Reconcile(context.Background(), 10)
-	require.NoError(t, err)
-	assert.Equal(t, models.StatusDelivered, f.record().Status)
-	assert.Len(t, f.sender.records(), 1)
+	env := new(gobl.Envelope)
+	require.NoError(t, json.Unmarshal([]byte(readBody(t, resp)), env))
+
+	var ours int
+	for _, sig := range env.Signatures {
+		p, err := head.SignedPayload(sig)
+		require.NoError(t, err)
+		if p.Iss == string(f.verifier.Address()) {
+			ours++
+			assert.Equal(t, string(f.subAddr), p.Aud)
+		}
+	}
+	assert.Equal(t, 1, ours, "the collected envelope carries our countersignature")
+}
+
+// The three answers a waiting caller needs to tell apart, without
+// being told anything about the checks themselves.
+func TestCollectionDistinguishesWaitingFromSettled(t *testing.T) {
+	t.Run("still running is 204, so the caller keeps waiting", func(t *testing.T) {
+		f := newFixture(t)
+		require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
+		assert.Equal(t, http.StatusNoContent, f.collect().StatusCode)
+	})
+
+	t.Run("never heard of is also 204, and says no more than that", func(t *testing.T) {
+		f := newFixture(t)
+		assert.Equal(t, http.StatusNoContent, f.collect().StatusCode)
+	})
+
+	t.Run("settled without an endorsement is 410, so the caller stops", func(t *testing.T) {
+		f := newFixture(t)
+		require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
+		require.Equal(t, http.StatusOK, f.approve(verifiedCompany(func(c *provider.CompanyRecord) {
+			c.RegistrationNumber = "B98765431"
+			c.TaxCode = "ESB98765431"
+		})).StatusCode)
+		require.Equal(t, models.StatusMismatch, f.record().Status)
+
+		resp := f.collect()
+		assert.Equal(t, http.StatusGone, resp.StatusCode)
+		assert.NotContains(t, readBody(t, resp), "B98765431",
+			"a caller is told it ended, not what the registry said")
+	})
+}
+
+// The request token is the only credential, and the address that
+// signed it is the address whose case is read — so a subject can only
+// ever collect its own.
+func TestCollectionRequiresARequestToken(t *testing.T) {
+	f := newFixture(t)
+	resp := f.do(http.MethodGet, web.VerificationPath, nil, "", "")
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
 // An operator may release a name mismatch, and only a name mismatch.
@@ -340,8 +390,8 @@ func TestOperatorCanReleaseANameMismatchButNothingElse(t *testing.T) {
 
 		rec, err := f.setup.Verifications().Approve(context.Background(), f.subAddr, "sam", "confirmed against the registry by hand")
 		require.NoError(t, err)
-		assert.Equal(t, models.StatusDelivered, rec.Status)
-		assert.Len(t, f.sender.records(), 1)
+		assert.Equal(t, models.StatusVerified, rec.Status)
+		assert.Len(t, f.endorsements(), 1)
 		require.Len(t, rec.OperatorActions, 1)
 		assert.Equal(t, "sam", rec.OperatorActions[0].Actor)
 		assert.NotEmpty(t, rec.OperatorActions[0].Reason)
@@ -357,7 +407,7 @@ func TestOperatorCanReleaseANameMismatchButNothingElse(t *testing.T) {
 
 		_, err := f.setup.Verifications().Approve(context.Background(), f.subAddr, "sam", "looks fine to me")
 		require.Error(t, err, "no operator may sign off on a different company")
-		assert.Empty(t, f.sender.records())
+		assert.Empty(t, f.endorsements())
 	})
 }
 
