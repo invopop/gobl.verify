@@ -457,3 +457,23 @@ func TestHealthz(t *testing.T) {
 	resp := f.do(http.MethodGet, "/healthz", nil, "", "")
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
+
+// The endorsement is pushed to the subject's inbox as a courtesy so
+// its platform learns at once, but collection is the contract. A push
+// that fails must leave the case verified and collectable, because
+// treating it as a failure is what would drag outbound retries, a
+// failure state and a reconciler back into a verifier.
+func TestInboxNotificationIsBestEffort(t *testing.T) {
+	f := newFixture(t)
+
+	// The fixture's fetcher serves keys but refuses posts, so the
+	// notification cannot succeed.
+	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
+	require.Equal(t, http.StatusOK, f.approve(verifiedCompany()).StatusCode)
+
+	assert.Equal(t, models.StatusVerified, f.record().Status,
+		"a failed notification does not change the outcome")
+	require.Len(t, f.endorsements(), 1)
+	assert.Equal(t, http.StatusOK, f.collect().StatusCode,
+		"the endorsement is still collectable")
+}

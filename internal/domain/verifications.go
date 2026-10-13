@@ -841,7 +841,34 @@ func (d *Verifications) endorse(ctx context.Context, rec *models.Verification) e
 		"address", string(rec.Address),
 		"envelope", rec.EnvelopeUUID.String(),
 	)
+	d.notifySubjectInbox(ctx, rec, env)
 	return nil
+}
+
+// notifySubjectInbox hands the endorsement straight to the subject's
+// own inbox, so its platform learns immediately instead of waiting out
+// a polling interval.
+//
+// This is a courtesy, not the contract. The endorsement is already
+// stored and collectable, so a delivery that fails costs nothing and
+// is never retried — which is exactly what keeps a verifier simple.
+// Pushing as the contract is what forces outbound retries, a failure
+// state and a reconciler to drain it; pushing as an optimisation
+// forces none of them. A verifier that implements none of this still
+// works, just more slowly.
+func (d *Verifications) notifySubjectInbox(ctx context.Context, rec *models.Verification, env *gobl.Envelope) {
+	sendCtx, cancel := context.WithTimeout(ctx, deliveryTimeout)
+	defer cancel()
+	if err := d.client.Send(sendCtx, rec.Address, env); err != nil {
+		// Expected whenever the subject runs no inbox, which is
+		// allowed: collection is how they get it either way.
+		d.log.Info("endorse.notify_skipped",
+			"address", string(rec.Address),
+			"reason", err.Error(),
+		)
+		return
+	}
+	d.log.Info("endorse.notified", "address", string(rec.Address))
 }
 
 // fetchDecision retrieves and stores the provider's verdict. The raw
