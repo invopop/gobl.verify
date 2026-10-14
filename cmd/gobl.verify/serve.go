@@ -83,7 +83,7 @@ behind a reverse proxy that handles TLS termination.`,
 
 			errCh := make(chan error, 1)
 			go func() {
-				slog.Info("GOBL KYB listening",
+				slog.Info("GOBL Verify listening",
 					"addr", addr,
 					"domain", string(setup.Identity().Address()),
 					"authority", string(setup.Verifications().Authority()),
@@ -123,7 +123,7 @@ behind a reverse proxy that handles TLS termination.`,
 	cmd.Flags().StringVar(&cfg.SMTPHost, "smtp-host", cfg.SMTPHost, "SMTP submission host; empty logs emails instead of sending (env SMTP_HOST)")
 	cmd.Flags().IntVar(&cfg.SMTPPort, "smtp-port", cfg.SMTPPort, "SMTP submission port (env SMTP_PORT)")
 	cmd.Flags().StringVar(&cfg.SMTPUsername, "smtp-username", cfg.SMTPUsername, "SMTP username; empty skips authentication (env SMTP_USERNAME)")
-	cmd.Flags().StringVar(&cfg.EmailFrom, "email-from", cfg.EmailFrom, `From header of verification emails, e.g. "GOBL KYB <kyb@gobl.org>" (env EMAIL_FROM)`)
+	cmd.Flags().StringVar(&cfg.EmailFrom, "email-from", cfg.EmailFrom, `From header of verification emails, e.g. "GOBL Verify <verify@example.org>" (env EMAIL_FROM)`)
 	return cmd
 }
 

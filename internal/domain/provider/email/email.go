@@ -77,6 +77,18 @@ func New(cfg Config) (*Provider, error) {
 // Name identifies the implementation.
 func (p *Provider) Name() provider.Name { return Name }
 
+// Requires reports that this provider consults no registry.
+//
+// It therefore asks nothing of the party beyond the published email
+// address the inbox already requires: a sandbox party that has not
+// been given a tax identity can still prove it reads its own mail,
+// which is the whole of what this check attests. The decision it
+// returns echoes the subject's own declaration, so the domain skips
+// the match check rather than compare that echo with itself.
+func (p *Provider) Requires() provider.Requirements {
+	return provider.Requirements{}
+}
+
 // CreateSession mints a confirmation link.
 //
 // Nothing is spent here, which is the one way this provider differs in

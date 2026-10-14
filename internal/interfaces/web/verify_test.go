@@ -477,3 +477,55 @@ func TestInboxNotificationIsBestEffort(t *testing.T) {
 	assert.Equal(t, http.StatusOK, f.collect().StatusCode,
 		"the endorsement is still collectable")
 }
+
+// A provider that consults no registry hands back the subject's own
+// declaration. Running the match check on that would compare the
+// party's claims with the party's claims — a comparison that cannot
+// fail — and recording it as a passed match would dress a
+// self-assertion up as corroboration. So it is skipped, and the case
+// carries no match report at all.
+func TestRegistrylessApprovalIsNotRecordedAsAMatch(t *testing.T) {
+	f := newFixture(t)
+	f.provider.Requirements = provider.Requirements{}
+	require.Equal(t, http.StatusAccepted,
+		f.submit(f.registeredEnvelope(f.newParty(func(p *org.Party) { p.TaxID = nil }))).StatusCode)
+
+	// What the email provider returns: the subject echoed back.
+	require.Equal(t, http.StatusOK, f.approve(provider.CompanyRecord{
+		LegalName: "Acme Widgets SL",
+	}).StatusCode)
+
+	rec := f.record()
+	assert.Equal(t, models.StatusVerified, rec.Status)
+	assert.Nil(t, rec.Match, "an echo is not a match, and must not be filed as one")
+	assert.Len(t, f.endorsements(), 1)
+}
+
+// The registry-less path would otherwise have no comparison left at
+// all, so the one check that does not depend on the provider has to
+// keep working: the facts are re-derived from the envelope about to be
+// signed, and a case whose party document no longer describes what was
+// checked is never countersigned.
+func TestRegistrylessEndorsementStillRefusesAChangedParty(t *testing.T) {
+	f := newFixture(t)
+	f.provider.Requirements = provider.Requirements{}
+	require.Equal(t, http.StatusAccepted,
+		f.submit(f.registeredEnvelope(f.newParty(func(p *org.Party) { p.TaxID = nil }))).StatusCode)
+
+	// Swap the stored envelope for a different company, as a process
+	// that got between the open session and the decision would.
+	rec := f.record()
+	swapped := f.registeredEnvelope(f.newParty(func(p *org.Party) {
+		p.Name = "Totally Different Holdings"
+		p.TaxID = nil
+	}))
+	rec.SetEnvelope(swapped)
+	require.NoError(t, f.store.Put(context.Background(), rec))
+
+	require.Equal(t, http.StatusOK, f.approve(provider.CompanyRecord{
+		LegalName: "Acme Widgets SL",
+	}).StatusCode)
+
+	assert.Equal(t, models.StatusMismatch, f.record().Status)
+	assert.Empty(t, f.endorsements(), "a party that changed under the check is never countersigned")
+}

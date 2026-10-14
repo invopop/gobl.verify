@@ -150,12 +150,17 @@ func (d *Verifications) Receive(ctx context.Context, env *gobl.Envelope) (*model
 		return nil, err
 	}
 
-	facts, err := SubjectFactsFrom(party)
+	facts, err := d.factsFrom(party)
 	if err != nil {
 		d.log.Warn("inbox.rejected", "reason", "incomplete_party", "caller", string(subject), "error", err.Error())
 		return nil, ErrValidation.WithMessage("%s", err.Error())
 	}
-	if !d.countrySupported(facts.Country) {
+	// The jurisdiction gate only bites on a party that named a
+	// jurisdiction. A registry-backed provider always has one by the
+	// time it gets here; one that consults no registry may not, and
+	// refusing it for a country nothing will be looked up in would
+	// turn away a subject over a fact the check never reads.
+	if !facts.Country.Empty() && !d.countrySupported(facts.Country) {
 		d.log.Warn("inbox.rejected", "reason", "country_unsupported", "caller", string(subject), "country", string(facts.Country))
 		// A policy refusal, not a malformed document (spec §8.3): the
 		// envelope is perfectly well formed and there is nothing the
@@ -771,6 +776,27 @@ func (d *Verifications) settle(ctx context.Context, rec *models.Verification) er
 		return nil
 	}
 
+	// The match check is what turns "a company was verified" into
+	// "this company was verified", and it only means that when the
+	// provider resolved the registry record itself. A provider that
+	// consults no registry can only hand back what the subject
+	// declared, so comparing the two would be this service checking
+	// the party's claims against the party's claims — a check that
+	// cannot fail, recorded as though it had passed. Skip it, and let
+	// what the provider actually confirmed stand on its own.
+	if !d.provider.Requires().RegistryFacts {
+		d.log.Info("match.skipped",
+			"address", string(rec.Address),
+			"session", rec.Provider.ID,
+			"provider", string(d.provider.Name()),
+		)
+		if err := d.endorse(ctx, rec); err != nil {
+			return err
+		}
+		d.notifyVerified(ctx, rec)
+		return nil
+	}
+
 	report := Match(facts, dec.Company, d.opts.Match)
 	rec.Match = report.model(now)
 
@@ -921,7 +947,17 @@ func (d *Verifications) currentFacts(rec *models.Verification) (SubjectFacts, er
 	if !ok || party == nil {
 		return SubjectFacts{}, errors.New("stored envelope no longer contains an org.Party")
 	}
-	return SubjectFactsFrom(party)
+	return d.factsFrom(party)
+}
+
+// factsFrom derives the subject facts this verifier's provider works
+// from: the strict registry tuple when the provider looks companies
+// up, and whatever the party declares when it does not.
+func (d *Verifications) factsFrom(party *org.Party) (SubjectFacts, error) {
+	if d.provider.Requires().RegistryFacts {
+		return SubjectFactsFrom(party)
+	}
+	return DeclaredFactsFrom(party)
 }
 
 // Reconcile drives cases the provider has stopped talking to us about.

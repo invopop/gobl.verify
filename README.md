@@ -61,6 +61,7 @@ Everything vendor-specific lives behind one interface in
 ```go
 type Provider interface {
     Name() Name
+    Requires() Requirements
     CreateSession(ctx context.Context, req SessionRequest) (*Session, error)
     Decision(ctx context.Context, sessionID string) (*Decision, error)
     ParseEvent(raw []byte, header http.Header, now time.Time) (*Event, error)
@@ -71,6 +72,26 @@ A new verifier is a package implementing it and a case in `buildProvider`.
 Nothing else changes. Two optional interfaces let a provider contribute
 routes: `ConfirmingProvider` if it needs a page of its own (as the email one
 does), `CallbackProvider` if its vendor pushes updates to a URL.
+
+`Requires()` is the one method worth thinking about before you write any of
+the others. Its single field, `RegistryFacts`, says whether your provider
+looks the company up in a company registry, and the domain reads it twice:
+
+- **At the inbox.** A registry lookup needs a legal name, a registry country
+  and a tax or legal identity, so a party publishing none of them is refused
+  before a session is opened — discovering it afterwards means discovering it
+  after the check has been paid for. A provider that consults no registry
+  asks for none of that, and demanding a tax code it will never read only
+  turns away subjects it could have served.
+- **After a decision.** The match check below is only meaningful against a
+  record the provider resolved *independently*. A provider that consults no
+  registry can only hand back what the subject declared, so the domain skips
+  the check rather than comparing the party's claims with the party's claims
+  and filing the result as corroboration.
+
+The envelope-swap guard runs either way: the facts are always re-derived from
+the envelope about to be signed, so a party document that changed under a
+running check is never countersigned.
 
 ### Writing one
 

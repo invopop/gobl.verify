@@ -18,7 +18,7 @@ var statusPage = template.Must(template.New("status").Parse(`<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>{{.Title}} — GOBL KYB</title>
+<title>{{.Title}} — {{.Verifier}}</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 0; background: #f5f5f4; color: #1c1917; }
   main { max-width: 34rem; margin: 4rem auto; padding: 2rem; background: #fff;

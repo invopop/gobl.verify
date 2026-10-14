@@ -254,10 +254,42 @@ type Event struct {
 	At time.Time
 }
 
+// Requirements describes what a provider needs from the subject's
+// party document, and what evidence its decisions carry back. The
+// domain reads it in two places: at the inbox, to admit only parties
+// the check can actually be run on, and after a decision, to know
+// whether there is anything independent to compare against.
+type Requirements struct {
+	// RegistryFacts reports that this provider looks the company up
+	// in a company registry.
+	//
+	// When true the subject must publish the detail such a lookup
+	// needs — a legal name, a registry country, and a tax or legal
+	// identity — and the decision carries a CompanyRecord the
+	// provider resolved independently, which the match check compares
+	// against what the party claimed. That comparison is what makes
+	// the countersignature worth anything.
+	//
+	// A provider that confirms something about the subject without
+	// consulting a registry leaves it false: the email reference
+	// check here, a signed mandate, or an operator's own records. Its
+	// decision can only echo back what the subject declared, and
+	// matching an echo proves nothing, so the domain skips the match
+	// check instead of running a comparison that cannot fail — and
+	// admits any registered party the check can be performed on,
+	// rather than demanding a tax code it will never look at.
+	RegistryFacts bool
+}
+
 // Provider performs KYB checks.
 type Provider interface {
 	// Name identifies the implementation.
 	Name() Name
+
+	// Requires reports what this provider needs from the subject and
+	// what its decisions carry back. It is read once at startup and
+	// must not vary between calls.
+	Requires() Requirements
 
 	// CreateSession opens a verification and returns the hosted flow
 	// handle.

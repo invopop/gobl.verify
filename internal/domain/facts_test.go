@@ -210,3 +210,55 @@ func TestSubjectFactsIgnoresNonLegalIdentities(t *testing.T) {
 	assert.Equal(t, domain.NumberSourceTaxID, f.NumberSource,
 		"a D-U-N-S is a Dun & Bradstreet number, not a company registry number")
 }
+
+// The lenient derivation is what a provider that consults no registry
+// works from: it takes what the party publishes and asks for nothing.
+func TestDeclaredFactsFrom(t *testing.T) {
+	t.Run("takes what is there", func(t *testing.T) {
+		f, err := domain.DeclaredFactsFrom(party())
+		require.NoError(t, err)
+		assert.Equal(t, "Acme Widgets SL", f.LegalName)
+		assert.Equal(t, "ES", string(f.Country))
+		assert.Equal(t, "B12345674", f.TaxCode)
+		assert.Equal(t, domain.NumberSourceTaxID, f.NumberSource)
+	})
+
+	t.Run("requires no tax identity", func(t *testing.T) {
+		f, err := domain.DeclaredFactsFrom(party(func(p *org.Party) { p.TaxID = nil }))
+		require.NoError(t, err)
+		assert.Equal(t, "Acme Widgets SL", f.LegalName)
+		assert.Empty(t, string(f.Country))
+		assert.Empty(t, f.RegistrationNumber)
+		assert.Equal(t, domain.NumberSourceNone, f.NumberSource)
+	})
+
+	t.Run("requires no legal name", func(t *testing.T) {
+		f, err := domain.DeclaredFactsFrom(party(func(p *org.Party) { p.Name = "" }))
+		require.NoError(t, err)
+		assert.Empty(t, f.LegalName)
+	})
+
+	t.Run("still refuses a country it cannot resolve", func(t *testing.T) {
+		_, err := domain.DeclaredFactsFrom(party(func(p *org.Party) {
+			p.TaxID = &tax.Identity{Country: "EU", Code: "12345"}
+		}))
+		require.Error(t, err, "an unmappable country is a malformed document, not an absent fact")
+	})
+
+	t.Run("fingerprints what it found", func(t *testing.T) {
+		bare := func(p *org.Party) { p.TaxID = nil }
+		a, err := domain.DeclaredFactsFrom(party(bare))
+		require.NoError(t, err)
+		b, err := domain.DeclaredFactsFrom(party(bare))
+		require.NoError(t, err)
+		assert.Equal(t, a.Hash(), b.Hash())
+
+		c, err := domain.DeclaredFactsFrom(party(func(p *org.Party) {
+			p.TaxID = nil
+			p.Name = "Something Else SL"
+		}))
+		require.NoError(t, err)
+		assert.NotEqual(t, a.Hash(), c.Hash(),
+			"a changed name is still a changed set of facts")
+	})
+}

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -74,11 +75,16 @@ func (f SubjectFacts) Hash() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// SubjectFactsFrom derives the verifiable facts from a party, or
-// explains which published detail is missing. Every failure here is a
-// 422 at the inbox: it is far better to refuse a party we cannot check
-// than to open a paid session that can only end in a mismatch.
-func SubjectFactsFrom(party *org.Party) (SubjectFacts, error) {
+// DeclaredFactsFrom derives whatever verifiable facts the party
+// happens to publish, requiring none of them.
+//
+// It is what a provider that consults no registry works from: the
+// email reference check needs no tax code, and refusing a party for
+// not publishing one would turn away a subject the check could have
+// been run on perfectly well. The facts it does find are still
+// recorded and still fingerprinted, so session re-use and the
+// envelope-swap check behave the same either way.
+func DeclaredFactsFrom(party *org.Party) (SubjectFacts, error) {
 	var f SubjectFacts
 	if party == nil {
 		return f, fmt.Errorf("party is missing")
@@ -89,14 +95,15 @@ func SubjectFactsFrom(party *org.Party) (SubjectFacts, error) {
 	// an "alternate short name". A registry lookup on a trading name
 	// finds nothing.
 	f.LegalName = strings.TrimSpace(party.Name)
-	if f.LegalName == "" {
-		return f, fmt.Errorf("party must publish a legal name (`name`) to be verified")
-	}
 
 	legal := legalIdentity(party)
 
+	// An unusable country is reported even here. A code we cannot map
+	// is a malformed document rather than an absent fact, and letting
+	// it through would store a fingerprint over a country that means
+	// nothing.
 	country, err := registryCountry(party, legal)
-	if err != nil {
+	if err != nil && !errors.Is(err, errNoRegistryCountry) {
 		return f, err
 	}
 	f.Country = country
@@ -120,6 +127,27 @@ func SubjectFactsFrom(party *org.Party) (SubjectFacts, error) {
 		f.NumberSource = NumberSourceNone
 	}
 
+	return f, nil
+}
+
+// SubjectFactsFrom derives the verifiable facts from a party, or
+// reports what the party would have to publish to be verifiable.
+//
+// This is the strict derivation, for a provider that looks the
+// company up in a company registry: without a name, a country and a
+// number there is nothing to look up, and discovering that after a
+// paid check has been opened is discovering it too late.
+func SubjectFactsFrom(party *org.Party) (SubjectFacts, error) {
+	f, err := DeclaredFactsFrom(party)
+	if err != nil {
+		return f, err
+	}
+	if f.LegalName == "" {
+		return f, fmt.Errorf("party must publish a legal name (`name`) to be verified")
+	}
+	if f.Country.Empty() {
+		return f, fmt.Errorf("party must publish a tax identity country or a legal identity country to be verified")
+	}
 	if f.RegistrationNumber == "" {
 		return f, fmt.Errorf("party must publish a tax identity (`tax_id`) or a legal identity to be verified")
 	}
@@ -151,8 +179,13 @@ func registryCountry(party *org.Party, legal *org.Identity) (l10n.Code, error) {
 	if legal != nil && !legal.Country.Empty() {
 		return isoCountry(legal.Country.Code())
 	}
-	return "", fmt.Errorf("party must publish a tax identity country or a legal identity country to be verified")
+	return "", errNoRegistryCountry
 }
+
+// errNoRegistryCountry means the party named no registry country at
+// all, as opposed to naming one that cannot be mapped to ISO. The
+// lenient derivation tolerates the first and never the second.
+var errNoRegistryCountry = errors.New("party must publish a tax identity country or a legal identity country to be verified")
 
 // isoCountry maps a tax country code onto its ISO 3166-1 alpha-2
 // equivalent. GOBL's tax country codes are a superset of ISO: Greece

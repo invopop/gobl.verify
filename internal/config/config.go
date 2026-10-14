@@ -1,4 +1,4 @@
-// Package config defines the runtime configuration for the KYB
+// Package config defines the runtime configuration for the
 // verification service. Values are resolved from environment variables
 // (the mechanism the cluster uses to inject config and secrets) and may
 // be overridden by the command-line flags in cmd/gobl.verify.
@@ -140,7 +140,7 @@ type Config struct {
 	SMTPUsername string
 	SMTPPassword string
 	// EmailFrom is the From header of verification emails, e.g.
-	// "GOBL KYB <kyb@gobl.org>". Required when SMTPHost is set.
+	// "GOBL Verify <verify@example.org>". Required when SMTPHost is set.
 	EmailFrom string
 
 	// ShutdownTimeout bounds graceful shutdown of the HTTP server.

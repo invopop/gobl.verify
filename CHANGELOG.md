@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Providers now declare what they need.** `Provider.Requires()` returns a
+  `Requirements`, whose `RegistryFacts` field says whether the provider looks
+  the company up in a company registry. The domain reads it at the inbox and
+  again after a decision.
+
+  Before this, every submission had to publish a legal name, a registry
+  country and a tax or legal identity, whatever the configured provider did
+  with them — so the email reference check refused parties it could have
+  verified perfectly well, and refused the very parties the sandbox service
+  it replaces accepts today. Those requirements belong to a registry lookup,
+  not to verification as such.
+
+  It also fixes something quieter. The match check compares what the party
+  claims against what the provider resolved, and that is only evidence when
+  the provider resolved it independently. A provider that consults no
+  registry can only echo the subject's own declaration back, so running the
+  check compared the party's claims with the party's claims — a comparison
+  that cannot fail — and filed the result as a passed match. It is now
+  skipped, and such a case carries no match report at all. The envelope-swap
+  guard is unaffected: the facts are still re-derived from the envelope about
+  to be signed, so a party that changed under a running check is still never
+  countersigned.
+
 - Renamed from `gobl.kyb` to **`gobl.verify`**, and reframed from a service
   Invopop operates into the reference implementation a network member runs.
   "KYB" overstated it: a verifier is whoever vouches, and what they check is
