@@ -33,9 +33,25 @@ import (
 // mockFetcher serves a map[url]bytes, with optional per-URL errors.
 // Used by the goblnet.Client the domain uses to verify incoming
 // envelopes and their authority countersignatures.
+// opsEmail is where the fixture's operator alerts go.
+const opsEmail = "ops@example.com"
+
+type post struct {
+	url  string
+	body []byte
+	hdr  http.Header
+	// ok records whether the inbox accepted it. A refused delivery is
+	// still an attempt worth seeing, but it is not a delivery.
+	ok bool
+}
+
 type mockFetcher struct {
 	data map[string][]byte
 	errs map[string]error
+
+	mu      sync.Mutex
+	posts   []post
+	postErr error
 }
 
 func (m *mockFetcher) Fetch(_ context.Context, url string, _ http.Header) ([]byte, error) {
@@ -48,8 +64,56 @@ func (m *mockFetcher) Fetch(_ context.Context, url string, _ http.Header) ([]byt
 	return nil, goblnet.ErrFetchFailed
 }
 
-func (m *mockFetcher) Post(_ context.Context, _ string, _ []byte, _ http.Header) error {
-	return goblnet.ErrFetchFailed
+// Post stands in for the subject's inbox. It records what was
+// delivered and, by default, accepts it — the endorsement coming back
+// through the inbox is the normal path now, so the fixture has to be
+// able to observe it rather than only fail it.
+func (m *mockFetcher) Post(_ context.Context, url string, body []byte, header http.Header) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.posts = append(m.posts, post{
+		url:  url,
+		body: append([]byte(nil), body...),
+		hdr:  header.Clone(),
+		ok:   m.postErr == nil,
+	})
+	return m.postErr
+}
+
+// delivered returns the envelopes handed to the given address's inbox.
+func (m *mockFetcher) delivered(addr goblnet.Address) []*gobl.Envelope {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*gobl.Envelope
+	for _, p := range m.posts {
+		if !p.ok || p.url != addr.InboxURL() {
+			continue
+		}
+		env := new(gobl.Envelope)
+		if err := json.Unmarshal(p.body, env); err != nil {
+			continue
+		}
+		out = append(out, env)
+	}
+	return out
+}
+
+// lastPostHeader returns the headers of the most recent delivery.
+func (m *mockFetcher) lastPostHeader() http.Header {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.posts) == 0 {
+		return nil
+	}
+	return m.posts[len(m.posts)-1].hdr
+}
+
+// failPosts makes every later delivery fail with err; nil restores
+// the accepting inbox.
+func (m *mockFetcher) failPosts(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.postErr = err
 }
 
 // mockMailer records messages.
@@ -130,8 +194,16 @@ func newFixture(t *testing.T, mods ...func(*domain.Options)) *fixture {
 		},
 		errs: map[string]error{},
 	}
+	// The verifier's own published key, so a stand-in for the
+	// subject's inbox can verify the request tokens we mint.
+	for _, pub := range verifier.PublicKeys {
+		raw, err := json.Marshal(pub)
+		require.NoError(t, err)
+		fetcher.data[verifier.Address().KeyURL(pub.ID())] = raw
+	}
 	client := goblnet.NewClient(
 		goblnet.WithFetcher(fetcher),
+		goblnet.WithIdentity(verifier.Address(), verifier.PrivateKey),
 		goblnet.WithAuthorities(regAddr),
 	)
 	store := repos.NewMemoryVerifications()
@@ -161,6 +233,9 @@ func newFixture(t *testing.T, mods ...func(*domain.Options)) *fixture {
 		Mailer:        mail,
 		Provider:      prov,
 		Options:       opts,
+		// Always wired, so the paths that alert an operator are
+		// observable rather than silently skipped.
+		OpsAlertEmail: opsEmail,
 		Logger:        discardLogger(),
 	})
 	mux := web.NewMux(setup, discardLogger())
@@ -331,17 +406,46 @@ func (f *fixture) due(rec *models.Verification) {
 // This replaces what used to be an assertion on outbound deliveries.
 // The service no longer sends anything: it signs, stores, and waits to
 // be asked.
+// endorsements returns the endorsements actually handed back to the
+// subject's inbox. It reads the wire rather than the stored record on
+// purpose: an endorsement the subject never received is not one that
+// has been issued, as far as anyone outside this service is
+// concerned.
 func (f *fixture) endorsements() []*gobl.Envelope {
 	f.t.Helper()
-	rec, err := f.store.Get(context.Background(), f.subAddr)
-	if err != nil || rec.Countersigned == nil {
-		return nil
-	}
-	return []*gobl.Envelope{rec.Countersigned}
+	return f.fetcher.delivered(f.subAddr)
 }
 
-// collect fetches the endorsement the way a subject's platform would.
-func (f *fixture) collect() *http.Response {
+// lastEndorsement returns the most recent endorsement delivered to
+// the subject. Each endorsement is handed over as it is issued, so a
+// re-endorsement is a second delivery — supersession is about the
+// signatures inside an envelope, not about how many were sent.
+func (f *fixture) lastEndorsement() *gobl.Envelope {
 	f.t.Helper()
-	return f.do(http.MethodGet, web.VerificationPath, nil, f.bearer(), "")
+	sent := f.endorsements()
+	require.NotEmpty(f.t, sent, "expected an endorsement to have been delivered")
+	return sent[len(sent)-1]
+}
+
+// opsAlerts returns the operator alerts sent so far.
+func (f *fixture) opsAlerts() []mailer.Message {
+	f.t.Helper()
+	var out []mailer.Message
+	for _, m := range f.mail.records() {
+		if m.To == opsEmail {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// signed returns the endorsement this service stored, delivered or
+// not — for the few tests that are about the signing step itself.
+func (f *fixture) signed() *gobl.Envelope {
+	f.t.Helper()
+	rec, err := f.store.Get(context.Background(), f.subAddr)
+	if err != nil {
+		return nil
+	}
+	return rec.Countersigned
 }

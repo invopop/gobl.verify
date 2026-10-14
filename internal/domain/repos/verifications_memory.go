@@ -91,7 +91,7 @@ func (m *MemoryVerifications) DuePolling(_ context.Context, now time.Time, limit
 	defer m.mu.Unlock()
 	var out []*models.Verification
 	for _, v := range m.records {
-		if v.Status.Terminal() {
+		if !v.NeedsReconcile() {
 			continue
 		}
 		if v.NextPollAt != nil && v.NextPollAt.After(now) {

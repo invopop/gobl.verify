@@ -153,10 +153,10 @@ func reissueCmd() *cobra.Command {
 		Long: `Countersign the stored envelope again, replacing the endorsement
 with one carrying a fresh expiry.
 
-This service does not deliver endorsements — a subject collects its own
-and registers it with the authority itself. So this is not a delivery
-retry: it is the recovery path for an endorsement that lapsed before
-anybody collected it.`,
+The new endorsement is delivered to the subject's inbox like any
+other. Use this for an endorsement that lapsed, or one whose delivery
+was abandoned after the subject's inbox stayed unreachable; an
+ordinary failed delivery is retried on its own and needs nothing.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			addr, err := goblnet.ParseAddress(args[0])

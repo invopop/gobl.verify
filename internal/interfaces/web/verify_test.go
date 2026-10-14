@@ -2,7 +2,6 @@ package web_test
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -10,14 +9,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/invopop/gobl"
 	"github.com/invopop/gobl/head"
 	goblnet "github.com/invopop/gobl/net"
 	"github.com/invopop/gobl/org"
 
 	"github.com/invopop/gobl.verify/internal/domain/models"
 	"github.com/invopop/gobl.verify/internal/domain/provider"
-	"github.com/invopop/gobl.verify/internal/interfaces/web"
 )
 
 // The countersignature is the product. Its shape is what every
@@ -72,13 +69,13 @@ func TestReEndorsementSupersedesOnlyOurOwnSignature(t *testing.T) {
 	})
 	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(edited)).StatusCode)
 
-	// An endorsement replaces its predecessor rather than accumulating,
-	// so there is one — over the newer envelope.
-	sent := f.endorsements()
-	require.Len(t, sent, 1)
+	// Each endorsement is handed over as it is issued, so the newer
+	// one is a second delivery. What must not accumulate is our
+	// signature *inside* it.
+	require.Len(t, f.endorsements(), 2)
 
 	var ours, theirs int
-	for _, sig := range sent[0].Signatures {
+	for _, sig := range f.lastEndorsement().Signatures {
 		p, err := head.SignedPayload(sig)
 		require.NoError(t, err)
 		if p.Iss == string(f.verifier.Address()) {
@@ -313,22 +310,20 @@ func TestReconcilerRecoversADroppedCallback(t *testing.T) {
 	assert.Len(t, f.endorsements(), 1)
 }
 
-// Collection is the contract that replaced outbound delivery, and it
-// is what lets a verifier stay a signing service: the subject fetches
-// its own endorsement and registers it with the authority itself.
-func TestSubjectCollectsItsOwnEndorsement(t *testing.T) {
+// The endorsement goes back the way it came: a party envelope
+// delivered to the subject's inbox, which is the one route every
+// participant already has. The subject registers it with the
+// authority itself.
+func TestEndorsementIsReturnedToTheSubjectsInbox(t *testing.T) {
 	f := newFixture(t)
 	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
 	require.Equal(t, http.StatusOK, f.approve(verifiedCompany()).StatusCode)
 
-	resp := f.collect()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	env := new(gobl.Envelope)
-	require.NoError(t, json.Unmarshal([]byte(readBody(t, resp)), env))
+	sent := f.endorsements()
+	require.Len(t, sent, 1, "the endorsement goes back the way it came")
 
 	var ours int
-	for _, sig := range env.Signatures {
+	for _, sig := range sent[0].Signatures {
 		p, err := head.SignedPayload(sig)
 		require.NoError(t, err)
 		if p.Iss == string(f.verifier.Address()) {
@@ -336,46 +331,128 @@ func TestSubjectCollectsItsOwnEndorsement(t *testing.T) {
 			assert.Equal(t, string(f.subAddr), p.Aud)
 		}
 	}
-	assert.Equal(t, 1, ours, "the collected envelope carries our countersignature")
+	assert.Equal(t, 1, ours, "the delivered envelope carries our countersignature")
+
+	rec := f.record()
+	assert.Equal(t, models.StatusVerified, rec.Status)
+	require.NotNil(t, rec.Delivery.At)
+	assert.Equal(t, 1, rec.Delivery.Attempts, "one attempt, no retry needed")
+	assert.False(t, rec.Delivery.Pending())
 }
 
-// The three answers a waiting caller needs to tell apart, without
-// being told anything about the checks themselves.
-func TestCollectionDistinguishesWaitingFromSettled(t *testing.T) {
-	t.Run("still running is 204, so the caller keeps waiting", func(t *testing.T) {
-		f := newFixture(t)
-		require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
-		assert.Equal(t, http.StatusNoContent, f.collect().StatusCode)
-	})
-
-	t.Run("never heard of is also 204, and says no more than that", func(t *testing.T) {
-		f := newFixture(t)
-		assert.Equal(t, http.StatusNoContent, f.collect().StatusCode)
-	})
-
-	t.Run("settled without an endorsement is 410, so the caller stops", func(t *testing.T) {
-		f := newFixture(t)
-		require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
-		require.Equal(t, http.StatusOK, f.approve(verifiedCompany(func(c *provider.CompanyRecord) {
-			c.RegistrationNumber = "B98765431"
-			c.TaxCode = "ESB98765431"
-		})).StatusCode)
-		require.Equal(t, models.StatusMismatch, f.record().Status)
-
-		resp := f.collect()
-		assert.Equal(t, http.StatusGone, resp.StatusCode)
-		assert.NotContains(t, readBody(t, resp), "B98765431",
-			"a caller is told it ended, not what the registry said")
-	})
-}
-
-// The request token is the only credential, and the address that
-// signed it is the address whose case is read — so a subject can only
-// ever collect its own.
-func TestCollectionRequiresARequestToken(t *testing.T) {
+// A case that settles without an endorsement has nothing to hand
+// back, and must not hand back anything that leaks why.
+func TestNothingIsDeliveredWhenThereIsNoEndorsement(t *testing.T) {
 	f := newFixture(t)
-	resp := f.do(http.MethodGet, web.VerificationPath, nil, "", "")
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
+	require.Equal(t, http.StatusOK, f.approve(verifiedCompany(func(c *provider.CompanyRecord) {
+		c.RegistrationNumber = "B98765431"
+		c.TaxCode = "ESB98765431"
+	})).StatusCode)
+
+	require.Equal(t, models.StatusMismatch, f.record().Status)
+	assert.Empty(t, f.endorsements())
+	assert.Nil(t, f.signed())
+}
+
+// An unreachable inbox is a fact about the subject's host, not a
+// reason to undo a check that has already been paid for. The
+// endorsement is signed, kept, and re-offered by the reconciler.
+func TestDeliveryIsRetriedWhenTheInboxIsDown(t *testing.T) {
+	f := newFixture(t)
+	f.fetcher.failPosts(goblnet.ErrUnavailable)
+
+	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
+	require.Equal(t, http.StatusOK, f.approve(verifiedCompany()).StatusCode)
+
+	rec := f.record()
+	assert.Equal(t, models.StatusVerified, rec.Status,
+		"a failed delivery does not change the outcome of the checks")
+	assert.NotNil(t, rec.Countersigned, "the endorsement is signed and kept")
+	assert.True(t, rec.Delivery.Pending())
+	assert.Equal(t, 1, rec.Delivery.Attempts)
+	require.NotNil(t, rec.NextPollAt, "a retry is scheduled")
+	assert.Empty(t, f.endorsements())
+
+	// The inbox comes back; the reconciler hands it over, unchanged.
+	f.fetcher.failPosts(nil)
+	f.due(rec)
+	n, err := f.setup.Verifications().Reconcile(context.Background(), 10)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	sent := f.endorsements()
+	require.Len(t, sent, 1)
+	assert.Equal(t, f.signed().Head.Digest.Value, sent[0].Head.Digest.Value,
+		"the retry delivers the endorsement that was already signed, not a new one")
+
+	rec = f.record()
+	require.NotNil(t, rec.Delivery.At)
+	assert.Equal(t, 2, rec.Delivery.Attempts)
+	assert.Nil(t, rec.NextPollAt, "nothing left to do")
+}
+
+// Retrying forever against an inbox that will never take it is just a
+// slower way of never delivering. We stop, tell the operators, and
+// keep the endorsement.
+func TestDeliveryIsAbandonedEventually(t *testing.T) {
+	f := newFixture(t)
+	f.fetcher.failPosts(goblnet.ErrUnavailable)
+
+	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
+	require.Equal(t, http.StatusOK, f.approve(verifiedCompany()).StatusCode)
+
+	for i := 0; i < 20 && f.record().Delivery.Pending(); i++ {
+		f.due(f.record())
+		_, err := f.setup.Verifications().Reconcile(context.Background(), 10)
+		require.NoError(t, err)
+	}
+
+	rec := f.record()
+	assert.True(t, rec.Delivery.Abandoned)
+	assert.Equal(t, models.StatusVerified, rec.Status, "the verification still happened")
+	assert.NotNil(t, rec.Countersigned, "and the endorsement is still held")
+	assert.Nil(t, rec.NextPollAt, "but we have stopped knocking")
+
+	assert.NotEmpty(t, f.opsAlerts(), "the operators are told")
+}
+
+// An inbox that refuses the envelope has decided, not failed.
+// Re-sending an identical document produces an identical refusal.
+func TestARefusedDeliveryIsNotRetried(t *testing.T) {
+	f := newFixture(t)
+	f.fetcher.failPosts(goblnet.ErrInboxRejected)
+
+	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
+	require.Equal(t, http.StatusOK, f.approve(verifiedCompany()).StatusCode)
+
+	rec := f.record()
+	assert.True(t, rec.Delivery.Abandoned, "a refusal is final")
+	assert.Equal(t, 1, rec.Delivery.Attempts, "and is not tried again")
+	assert.Nil(t, rec.NextPollAt)
+}
+
+// The subject's own recovery for an endorsement it never received is
+// the flow it already uses: send the party again. A verified case
+// re-endorses for free, so this costs nothing and needs no second
+// endpoint to exist.
+func TestResubmissionRedeliversAnUndeliveredEndorsement(t *testing.T) {
+	f := newFixture(t)
+	f.fetcher.failPosts(goblnet.ErrUnavailable)
+
+	env := f.registeredEnvelope(f.newParty())
+	require.Equal(t, http.StatusAccepted, f.submit(env).StatusCode)
+	require.Equal(t, http.StatusOK, f.approve(verifiedCompany()).StatusCode)
+	require.True(t, f.record().Delivery.Pending())
+	require.Empty(t, f.endorsements())
+
+	before := f.provider.Sessions()
+	f.fetcher.failPosts(nil)
+	require.Equal(t, http.StatusAccepted, f.submit(env).StatusCode)
+
+	assert.Equal(t, before, f.provider.Sessions(), "re-delivery buys no new check")
+	require.Len(t, f.endorsements(), 1)
+	assert.NotNil(t, f.record().Delivery.At)
 }
 
 // An operator may release a name mismatch, and only a name mismatch.
@@ -458,26 +535,6 @@ func TestHealthz(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
-// The endorsement is pushed to the subject's inbox as a courtesy so
-// its platform learns at once, but collection is the contract. A push
-// that fails must leave the case verified and collectable, because
-// treating it as a failure is what would drag outbound retries, a
-// failure state and a reconciler back into a verifier.
-func TestInboxNotificationIsBestEffort(t *testing.T) {
-	f := newFixture(t)
-
-	// The fixture's fetcher serves keys but refuses posts, so the
-	// notification cannot succeed.
-	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
-	require.Equal(t, http.StatusOK, f.approve(verifiedCompany()).StatusCode)
-
-	assert.Equal(t, models.StatusVerified, f.record().Status,
-		"a failed notification does not change the outcome")
-	require.Len(t, f.endorsements(), 1)
-	assert.Equal(t, http.StatusOK, f.collect().StatusCode,
-		"the endorsement is still collectable")
-}
-
 // A provider that consults no registry hands back the subject's own
 // declaration. Running the match check on that would compare the
 // party's claims with the party's claims — a comparison that cannot
@@ -528,4 +585,36 @@ func TestRegistrylessEndorsementStillRefusesAChangedParty(t *testing.T) {
 
 	assert.Equal(t, models.StatusMismatch, f.record().Status)
 	assert.Empty(t, f.endorsements(), "a party that changed under the check is never countersigned")
+}
+
+// The premise of returning the endorsement through the inbox is that
+// an ordinary GOBL Net inbox will accept it. That is worth checking
+// against the library's own verification rather than assuming: this
+// stands in for the subject's inbox and verifies what the verifier
+// actually put on the wire.
+func TestTheDeliveryIsOneARealInboxWouldAccept(t *testing.T) {
+	f := newFixture(t)
+	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
+	require.Equal(t, http.StatusOK, f.approve(verifiedCompany()).StatusCode)
+
+	// Addressed to the subject's inbox, not anywhere else.
+	hdr := f.fetcher.lastPostHeader()
+	require.NotNil(t, hdr)
+
+	// The request token checks out as the subject's inbox would check
+	// it: audience us, issued by the verifier, within its freshness
+	// window, against the verifier's published key.
+	inbox := goblnet.NewClient(goblnet.WithFetcher(f.fetcher))
+	requester, err := inbox.VerifyAuthorization(
+		context.Background(), hdr.Get("Authorization"), f.subAddr)
+	require.NoError(t, err, "the subject's inbox must be able to verify our request token")
+	assert.Equal(t, f.verifier.Address(), requester,
+		"the delivery is authenticated as the verifier")
+
+	// And the envelope it carried verifies as a party endorsed by us.
+	env := f.lastEndorsement()
+	require.NoError(t, env.Validate())
+	subject, err := inbox.VerifyParty(context.Background(), env)
+	require.NoError(t, err, "what arrives is a valid party envelope")
+	assert.Equal(t, f.subAddr, subject)
 }

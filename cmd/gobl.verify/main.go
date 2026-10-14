@@ -3,7 +3,7 @@
 // runs whatever check the configured provider performs, establishes
 // that what the provider verified is actually the party in the
 // envelope, and — only then — countersigns that envelope and holds the
-// result for the subject to collect. Cases are backed by CouchDB.
+// result to the subject. Cases are backed by CouchDB.
 package main
 
 import (

@@ -155,7 +155,7 @@ func handleConfirmSubmit(s *domain.Setup, log *slog.Logger) http.HandlerFunc {
 
 		renderConfirm(w, http.StatusOK, confirmView{
 			Title:   "Verification confirmed",
-			Message: "Thank you. Your platform will collect the result and publish it; nothing further is needed from you.",
+			Message: "Thank you. The result is sent back to your inbox and your platform publishes it; nothing further is needed from you.",
 		})
 	}
 }

@@ -3,7 +3,7 @@
 // authority's subjects, running whatever check the configured provider
 // performs, deciding whether what that provider verified is actually
 // the party in the envelope, and — only then — countersigning that
-// envelope and holding the result for the subject to collect.
+// envelope and returning the result to the subject.
 //
 // Setup wires the repositories and domain services together and is the
 // single object handed to the transport adapters in interfaces/.

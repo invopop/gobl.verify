@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	// deliveryTimeout bounds a single outbound POST to the authority's
+	// deliveryTimeout bounds a single outbound POST to the subject's
 	// inbox, and a single email submission.
 	deliveryTimeout = 30 * time.Second
 
@@ -54,6 +54,16 @@ const (
 	pollReview = 6 * time.Hour
 	// pollRetry paces retries of our own failed work.
 	pollRetry = 5 * time.Minute
+
+	// deliveryRetry paces re-sending an endorsement the subject's
+	// inbox would not take, and maxDeliveryAttempts is where we stop.
+	// The ceiling is not a deadline on the endorsement — that is
+	// signed and stored and stays valid — only on how long we keep
+	// knocking. A subject whose inbox was broken for longer re-submits
+	// and is handed the same endorsement again, for free, through the
+	// one flow it already uses.
+	deliveryRetry       = 15 * time.Minute
+	maxDeliveryAttempts = 12
 )
 
 // VerificationStore is the persistence contract the verifications
@@ -749,7 +759,7 @@ func (d *Verifications) settle(ctx context.Context, rec *models.Verification) er
 	// Re-derive the facts from the envelope about to be signed rather
 	// than trusting the ones stored when the session opened. This is
 	// what closes the swap: open a check with clean company details,
-	// substitute a different party while it runs, collect an
+	// substitute a different party while it runs, and be handed an
 	// endorsement for a company nobody verified.
 	facts, err := d.currentFacts(rec)
 	if err != nil {
@@ -835,14 +845,15 @@ func (d *Verifications) settle(ctx context.Context, rec *models.Verification) er
 	return nil
 }
 
-// endorse countersigns the stored envelope and records the result for
-// the subject to collect.
+// endorse countersigns the stored envelope and returns it to the
+// subject.
 //
-// This service does not deliver the endorsement anywhere. The subject
-// collects it and re-registers with the authority itself, which is
-// what lets a verifier be a signing service rather than a full
-// network participant: no outbound delivery, no request tokens for
-// anyone else's inbox, and no retry machinery for a push that failed.
+// The endorsement goes back the way it came: a party envelope
+// delivered to the subject's inbox, the same route the subject used
+// to send it here. The subject then re-registers it with the
+// authority, which auto-verifies on any valid countersignature from a
+// trusted verifier regardless of who delivered it — so this needs
+// nothing of the authority at all.
 func (d *Verifications) endorse(ctx context.Context, rec *models.Verification) error {
 	now := time.Now().UTC()
 	env, err := d.countersignedCopy(rec)
@@ -867,34 +878,88 @@ func (d *Verifications) endorse(ctx context.Context, rec *models.Verification) e
 		"address", string(rec.Address),
 		"envelope", rec.EnvelopeUUID.String(),
 	)
-	d.notifySubjectInbox(ctx, rec, env)
-	return nil
+	return d.deliver(ctx, rec)
 }
 
-// notifySubjectInbox hands the endorsement straight to the subject's
-// own inbox, so its platform learns immediately instead of waiting out
-// a polling interval.
+// deliver returns the endorsement to the subject's inbox.
 //
-// This is a courtesy, not the contract. The endorsement is already
-// stored and collectable, so a delivery that fails costs nothing and
-// is never retried — which is exactly what keeps a verifier simple.
-// Pushing as the contract is what forces outbound retries, a failure
-// state and a reconciler to drain it; pushing as an optimisation
-// forces none of them. A verifier that implements none of this still
-// works, just more slowly.
-func (d *Verifications) notifySubjectInbox(ctx context.Context, rec *models.Verification, env *gobl.Envelope) {
+// This is the contract, not a courtesy. The endorsement is a party
+// envelope and the subject is a party with an inbox, so handing it
+// back is the same ordinary delivery the subject used to send it
+// here — no second well-known endpoint, no polling, and nothing for
+// the subject to implement that being on the network did not already
+// require.
+//
+// A failure is recorded and retried by the reconciler rather than
+// failing the caller. By this point the check has been paid for and
+// the countersignature exists; an unreachable inbox is a fact about
+// the subject's host, not a reason to undo any of that. When the
+// retries run out the case keeps its endorsement and the operators
+// are told — and the subject re-submitting is what asks for it again,
+// which costs nothing because a verified case re-endorses for free.
+func (d *Verifications) deliver(ctx context.Context, rec *models.Verification) error {
+	if rec.Countersigned == nil {
+		return ErrInternal.WithMessage("verification has no endorsement to deliver")
+	}
+	now := time.Now().UTC()
+	rec.Delivery.Attempts++
+	rec.Delivery.LastAttemptAt = &now
+
 	sendCtx, cancel := context.WithTimeout(ctx, deliveryTimeout)
 	defer cancel()
-	if err := d.client.Send(sendCtx, rec.Address, env); err != nil {
-		// Expected whenever the subject runs no inbox, which is
-		// allowed: collection is how they get it either way.
-		d.log.Info("endorse.notify_skipped",
+	err := d.client.Send(sendCtx, rec.Address, rec.Countersigned)
+	if err == nil {
+		rec.Delivery.At = &now
+		rec.Delivery.LastError = ""
+		rec.Delivery.Abandoned = false
+		rec.NextPollAt = nil
+		d.log.Info("endorse.delivered",
 			"address", string(rec.Address),
-			"reason", err.Error(),
+			"attempts", rec.Delivery.Attempts,
 		)
-		return
+		return d.save(ctx, rec)
 	}
-	d.log.Info("endorse.notified", "address", string(rec.Address))
+
+	rec.Delivery.LastError = err.Error()
+	// The inbox decided rather than failed. gobl/net draws this line
+	// for us: a 4xx other than 429 is ErrInboxRejected, and re-sending
+	// an identical envelope to an inbox that has already refused it
+	// only produces the same refusal more slowly.
+	if errors.Is(err, goblnet.ErrInboxRejected) {
+		rec.Delivery.Abandoned = true
+		rec.NextPollAt = nil
+		d.log.Error("endorse.delivery_refused",
+			"address", string(rec.Address),
+			"error", err.Error(),
+		)
+		if perr := d.save(ctx, rec); perr != nil {
+			return perr
+		}
+		d.alertOps(ctx, rec, "the subject's inbox refused the endorsement: "+err.Error())
+		return nil
+	}
+	if rec.Delivery.Attempts >= maxDeliveryAttempts {
+		rec.Delivery.Abandoned = true
+		rec.NextPollAt = nil
+		d.log.Error("endorse.delivery_abandoned",
+			"address", string(rec.Address),
+			"attempts", rec.Delivery.Attempts,
+			"error", err.Error(),
+		)
+		if perr := d.save(ctx, rec); perr != nil {
+			return perr
+		}
+		d.alertOps(ctx, rec, "the endorsement could not be delivered to the subject's inbox: "+err.Error())
+		return nil
+	}
+
+	d.schedule(rec, now.Add(deliveryRetry))
+	d.log.Warn("endorse.delivery_failed",
+		"address", string(rec.Address),
+		"attempts", rec.Delivery.Attempts,
+		"error", err.Error(),
+	)
+	return d.save(ctx, rec)
 }
 
 // fetchDecision retrieves and stores the provider's verdict. The raw
@@ -1002,6 +1067,16 @@ func (d *Verifications) reconcileOne(ctx context.Context, rec *models.Verificati
 	switch rec.Status {
 	case models.StatusMatching:
 		return d.settle(ctx, rec)
+
+	case models.StatusVerified:
+		// The checks are done and the endorsement is signed; all that
+		// is left is handing it over. Nothing here re-signs, so a
+		// retry never extends the endorsement's life.
+		if rec.Delivery.Pending() {
+			return d.deliver(ctx, rec)
+		}
+		rec.NextPollAt = nil
+		return d.save(ctx, rec)
 
 	case models.StatusError:
 		// An unconfirmed session create may already have been billed,
@@ -1167,7 +1242,7 @@ func (d *Verifications) Find(ctx context.Context, addr goblnet.Address) (*models
 
 // Reissue countersigns a verified case again, replacing the stored
 // endorsement with one carrying a fresh expiry. The recovery path for
-// an endorsement that lapsed before the subject collected it.
+// an endorsement that lapsed, or one nobody could be handed.
 func (d *Verifications) Reissue(ctx context.Context, addr goblnet.Address, actor string) (*models.Verification, error) {
 	rec, err := d.Find(ctx, addr)
 	if err != nil {

@@ -66,11 +66,11 @@ var verifiedText = template.Must(template.New("verified").Parse(
 
 The verification for "{{.Address}}" has been completed successfully.
 
-Your identity has been countersigned and is ready to collect. Your
-platform does the rest: it picks up the endorsement, registers it with
-{{.Authority}}, and publishes the result at your identity endpoint.
-Until that happens other participants will still see you as registered
-but unverified.
+Your identity has been countersigned and the endorsement has been
+sent back to your inbox. Your platform does the rest: it registers it
+with {{.Authority}} and publishes the result at your identity
+endpoint. Until that happens other participants will still see you as
+registered but unverified.
 
   {{.StatusURL}}
 
@@ -137,8 +137,8 @@ func (d *Verifications) notifyInReview(ctx context.Context, rec *models.Verifica
 	_ = d.send(ctx, rec, msg)
 }
 
-// notifyVerified tells the subject the endorsement is ready, and that
-// collecting and publishing it is their platform's step.
+// notifyVerified tells the subject the endorsement has been issued,
+// and that registering and publishing it is their platform's step.
 func (d *Verifications) notifyVerified(ctx context.Context, rec *models.Verification) {
 	msg := d.render(rec, verifiedText, "Verification of "+string(rec.Address)+" is complete", nil)
 	_ = d.send(ctx, rec, msg)

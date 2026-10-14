@@ -37,24 +37,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "KYB" overstated it: a verifier is whoever vouches, and what they check is
   theirs to define and publish.
 
-- **The verifier no longer delivers anything.** It countersigns and stores
-  the result; the subject collects it from
-  `GET /.well-known/gobl/verification` and registers it with the authority
-  itself.
+- **The endorsement goes back through the inbox.** When the checks pass, the
+  verifier countersigns the envelope and delivers it to the subject's own
+  inbox — the same ordinary `POST /.well-known/gobl/inbox` the subject used
+  to reach it. The subject then registers it with the authority itself.
 
-  This needed no change to the authority. `acceptedVerifier` scans an
+  This needs no change to the authority. `acceptedVerifier` scans an
   envelope's signatures for one issued by a trusted verifier and has no
   notion of who delivered it, so a subject re-registering with a
-  countersignature aboard auto-verifies exactly as before. What it removes
-  is most of a verifier: the outbound sender and its SSRF guard, request
-  tokens minted for someone else's inbox, the delivery retry states, and the
-  reconciler path that chased them. A verifier is now a keypair, a public
-  key endpoint and a signing step — which is what makes it realistic for
-  somebody other than us to run one.
+  countersignature aboard auto-verifies exactly as before.
 
-  `delivered` and `delivery_failed` collapse into a terminal `verified`, and
-  `redeliver` becomes `reissue`: not a delivery retry, but the recovery path
-  for an endorsement that lapsed before anyone collected it.
+  An earlier draft of this had the subject *collect* the endorsement from a
+  new `GET /.well-known/gobl/verification` endpoint. That was a mistake: it
+  invented a transport for a document the protocol already knows how to
+  move. A party envelope delivered to a party's inbox is the most ordinary
+  thing on the network, every subject already has an inbox, and a verifier
+  that publishes no route of its own has no protocol surface to get wrong.
+  A verifier that wants to expose progress to its own customers can, but
+  that is its product, not the specification's business.
+
+  `delivered` and `delivery_failed` do not come back as statuses. Delivery
+  is tracked beside the verification status, not inside it: "did we
+  endorse?" and "did they receive it?" have different owners, and conflating
+  them made a verified case whose push failed read as unverified. A failed
+  send is retried by the reconciler, a refusal (`ErrInboxRejected`) is
+  final, and when retries run out the case keeps its endorsement and alerts
+  an operator. The subject's own recovery is to re-submit, which re-endorses
+  and re-delivers for free.
+
+  `redeliver` becomes `reissue`: the recovery path for an endorsement that
+  lapsed, not a delivery retry — those happen on their own.
+
+- **The reconciler's CouchDB view and its in-memory twin now share one
+  predicate.** They had drifted: the view's allowlist still named `approved`
+  and `delivery_failed`, which no longer exist, and omitted `error`, so
+  errored cases were never swept in production while the tests swept them
+  fine. Both now derive from `Verification.NeedsReconcile`, and the view is
+  written as a terminal-status denylist so a new status cannot be silently
+  dropped from the queue again.
 
 ### Removed
 

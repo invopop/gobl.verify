@@ -26,14 +26,20 @@ Less than you would expect, and that is the point.
 2. **Check** whatever it is you check.
 3. **Countersign** that exact envelope — same `uuid`, same digest — with
    `iss` = your address, `aud` = the subject, and an expiry.
-4. **Let the subject collect it.**
+4. **Send it back to the subject's inbox.**
 
-There is no fourth party to notify and nothing to deliver. The subject takes
-its endorsement, registers it with the authority itself, and the authority
-auto-verifies on any valid countersignature from an address on its trusted
-list — regardless of who delivered it. So a verifier needs a keypair, a
-public key endpoint and a signing step. No outbound sender, no request
-tokens for anyone else's inbox, no retry machinery for a push that failed.
+There is no fourth party to notify. The endorsement goes back the way it
+came — a party envelope delivered to a party's inbox, the same ordinary
+`POST /.well-known/gobl/inbox` the subject used to reach you. The subject
+registers it with the authority itself, and the authority auto-verifies on
+any valid countersignature from an address on its trusted list, regardless
+of who delivered it.
+
+So the whole protocol surface is endpoints that already exist. A verifier
+publishes no route of its own, and a subject that can be on the network at
+all can already receive its result. If you want to expose a status or
+progress API to your own customers, that is yours to design — it is not
+part of being a verifier.
 
 ## The claim you are making
 
@@ -139,21 +145,36 @@ applicant data.
 | `GET /.well-known/gobl/who` | request token | this verifier's own signed party |
 | `GET /.well-known/gobl/keys/<kid>` | open | published signing keys |
 | `GET /.well-known/jwks.json` | open | keys as an RFC 7517 set |
-| `GET /.well-known/gobl/verification` | request token | **collect your endorsement** |
 | `GET/POST /confirm/<token>` | link token | the email provider's declaration page |
 | `GET /status/<token>` | link token | progress, for the subject |
 | `GET /healthz` | open | readiness/liveness |
 
-`/.well-known/gobl/verification` is the one route not in the spec. The
-request token is the only credential and the address that signed it is the
-address whose case is read, so a subject can only ever collect its own:
+Every GOBL Net route here is one the spec already defines; the rest are this
+implementation's own, and none of them is part of the protocol. Key
+discovery stays open so that verifying a request token never recurses into
+needing one.
 
-- **`200`** endorsed — the countersigned envelope
-- **`204`** still running, or nothing here — ask again later
-- **`410`** settled without an endorsement — stop asking
+### Delivering the endorsement
 
-Key discovery stays open so that verifying a request token never recurses
-into needing one.
+The endorsement is sent to the subject's inbox as soon as it is signed, and
+a send that fails is retried by the reconciler. The verification itself is
+never undone by a delivery problem: an unreachable inbox is a fact about the
+subject's host, and by then the check has been paid for and the
+countersignature exists.
+
+Two failures are told apart, because `gobl/net` draws the line for us. A
+transport failure or a `5xx` is transient and retried. `ErrInboxRejected` —
+a `4xx` other than `429` — means the inbox *decided*, and re-sending an
+identical envelope only produces the same refusal more slowly, so it is
+abandoned at once and an operator is told.
+
+When retries run out the case keeps its endorsement and stays `verified`.
+Delivery is tracked beside that status rather than inside it: "did we
+endorse?" and "did they receive it?" are different questions, and folding
+the second into the first makes a verified case whose push failed read as
+though the verification never happened. The subject's own recovery is the
+flow it already uses — re-submit, and a verified case re-endorses and
+re-delivers for free.
 
 ### Why refusals say little
 

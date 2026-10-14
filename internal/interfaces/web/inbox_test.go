@@ -259,13 +259,15 @@ func TestReEndorsementAfterApprovalIsFree(t *testing.T) {
 	assert.Equal(t, 1, f.provider.Sessions(), "no new check")
 	assert.Equal(t, models.StatusVerified, f.record().Status)
 
-	// The endorsement is reissued over the newer envelope rather than
-	// accumulating beside the old one.
+	// The endorsement is reissued over the newer envelope and handed
+	// over again, so the subject ends up holding one that covers what
+	// it currently publishes.
 	sent := f.endorsements()
-	require.Len(t, sent, 1)
-	require.NotNil(t, sent[0].Head.Digest)
+	require.Len(t, sent, 2, "the reissued endorsement is delivered too")
+	latest := f.lastEndorsement()
+	require.NotNil(t, latest.Head.Digest)
 	assert.Equal(t, f.record().EnvelopeDigest,
-		string(sent[0].Head.Digest.Algorithm)+":"+sent[0].Head.Digest.Value,
+		string(latest.Head.Digest.Algorithm)+":"+latest.Head.Digest.Value,
 		"the endorsement covers the party's current document")
 }
 

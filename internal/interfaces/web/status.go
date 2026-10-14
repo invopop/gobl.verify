@@ -110,7 +110,7 @@ func viewFor(rec *models.Verification) statusView {
 	case models.StatusVerified:
 		return statusView{
 			Title:   "Verified",
-			Message: "This identity has been verified and the endorsement is ready. Your platform collects it, registers it with the authority, and publishes the result — nothing further is needed from you.",
+			Message: "This identity has been verified and the endorsement has been sent back to your inbox. Your platform registers it with the authority and publishes the result — nothing further is needed from you.",
 		}
 	case models.StatusDeclined, models.StatusMismatch:
 		return statusView{
