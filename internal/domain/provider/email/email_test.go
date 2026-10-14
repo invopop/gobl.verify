@@ -123,3 +123,14 @@ func TestParseEventIsNotSupported(t *testing.T) {
 	_, err := p.ParseEvent(nil, nil, provider.Decision{}.DecidedAt)
 	assert.Error(t, err)
 }
+
+// The requirements are part of this provider's contract, not an
+// implementation detail: they are what lets a party with no tax
+// identity be verified, and what stops the domain filing this
+// provider's echo of the subject as a passed match.
+func TestRequiresNothingFromARegistry(t *testing.T) {
+	p, err := email.New(email.Config{PublicBaseURL: "https://verify.example"})
+	require.NoError(t, err)
+	assert.False(t, p.Requires().RegistryFacts,
+		"this provider consults no registry and must not ask the party for registry facts")
+}
