@@ -6,7 +6,7 @@
 //
 // Three different authentication schemes meet here, and they are not
 // interchangeable. The who and inbox endpoints take a bearer request
-// token (spec §5.5), because their callers are GOBL Net participants.
+// token (spec §6), because their callers are GOBL Net participants.
 // Key discovery is open, so that verifying a token never recurses. The
 // provider callback carries no token at all — a KYB vendor cannot mint
 // one — and is authenticated by the payload signature its own package

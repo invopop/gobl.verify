@@ -74,7 +74,7 @@ func buildDomain(ctx context.Context, cfg config.Config) (*domain.Setup, func(),
 		// The client trusts exactly the configured registration
 		// authority; incoming envelopes must carry its countersignature.
 		// Client and sender authenticate outbound requests as the
-		// verifier itself (bearer request tokens, spec §5.5).
+		// verifier itself (bearer request tokens, spec §6).
 		Client: goblnet.NewClient(
 			goblnet.WithIdentity(id.Address(), id.PrivateKey),
 			goblnet.WithAuthorities(authority),

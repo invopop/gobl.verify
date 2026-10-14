@@ -211,9 +211,9 @@ func (d *Verifications) admit(ctx context.Context, env *gobl.Envelope) (goblnet.
 		return "", nil, ErrValidation.WithMessage("envelope failed validation: %s", err.Error())
 	}
 
-	// Party envelopes are bearer documents (spec §8.3): the subject is
-	// the address the party document itself declares, attested by a
-	// valid self-signature. The request token carries delivery intent,
+	// A party envelope carries no audience binding: the subject is the
+	// address the party document itself declares, attested by a valid
+	// self-signature (spec §5.1). The request token carries delivery intent,
 	// and the authority countersignature below is what gates
 	// eligibility.
 	subject, err := d.client.VerifyParty(ctx, env)
