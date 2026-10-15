@@ -17,7 +17,8 @@ import (
 // wrapped by the domain.Identity service, which adds the signing
 // behaviour (countersigning, party envelopes).
 type Identity struct {
-	// Domain is the verifier's GOBL Net address (e.g. "kyb.gobl.org").
+	// Domain is the verifier's GOBL Net address (e.g.
+	// "verify.sandbox.gobl.org").
 	Domain net.Address
 	// PrivateKey is the active signing key. Its kid MUST appear in
 	// PublicKeys.

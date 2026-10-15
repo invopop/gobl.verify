@@ -19,15 +19,14 @@ import (
 	goblnet "github.com/invopop/gobl/net"
 	"github.com/invopop/gobl/org"
 
-	"github.com/invopop/gobl.kyb/internal/domain/delivery"
-	"github.com/invopop/gobl.kyb/internal/domain/mailer"
-	"github.com/invopop/gobl.kyb/internal/domain/models"
-	"github.com/invopop/gobl.kyb/internal/domain/provider"
-	"github.com/invopop/gobl.kyb/internal/domain/repos"
+	"github.com/invopop/gobl.verify/internal/domain/mailer"
+	"github.com/invopop/gobl.verify/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/provider"
+	"github.com/invopop/gobl.verify/internal/domain/repos"
 )
 
 const (
-	// deliveryTimeout bounds a single outbound POST to the authority's
+	// deliveryTimeout bounds a single outbound POST to the subject's
 	// inbox, and a single email submission.
 	deliveryTimeout = 30 * time.Second
 
@@ -55,6 +54,16 @@ const (
 	pollReview = 6 * time.Hour
 	// pollRetry paces retries of our own failed work.
 	pollRetry = 5 * time.Minute
+
+	// deliveryRetry paces re-sending an endorsement the subject's
+	// inbox would not take, and maxDeliveryAttempts is where we stop.
+	// The ceiling is not a deadline on the endorsement — that is
+	// signed and stored and stays valid — only on how long we keep
+	// knocking. A subject whose inbox was broken for longer re-submits
+	// and is handed the same endorsement again, for free, through the
+	// one flow it already uses.
+	deliveryRetry       = 15 * time.Minute
+	maxDeliveryAttempts = 12
 )
 
 // VerificationStore is the persistence contract the verifications
@@ -107,7 +116,6 @@ type Verifications struct {
 	store    VerificationStore
 	identity *Identity
 	client   *goblnet.Client
-	sender   delivery.Sender
 	mailer   mailer.Mailer
 	provider provider.Provider
 	payments PaymentGate
@@ -117,7 +125,7 @@ type Verifications struct {
 }
 
 // newVerifications instantiates the verifications domain service.
-func newVerifications(store VerificationStore, identity *Identity, client *goblnet.Client, sender delivery.Sender, m mailer.Mailer, p provider.Provider, gate PaymentGate, opts Options, log *slog.Logger) *Verifications {
+func newVerifications(store VerificationStore, identity *Identity, client *goblnet.Client, m mailer.Mailer, p provider.Provider, gate PaymentGate, opts Options, log *slog.Logger) *Verifications {
 	if canon, err := goblnet.ParseAddress(string(opts.Authority)); err == nil {
 		opts.Authority = canon
 	}
@@ -125,7 +133,6 @@ func newVerifications(store VerificationStore, identity *Identity, client *gobln
 		store:    store,
 		identity: identity,
 		client:   client,
-		sender:   sender,
 		mailer:   m,
 		provider: p,
 		payments: gate,
@@ -153,12 +160,17 @@ func (d *Verifications) Receive(ctx context.Context, env *gobl.Envelope) (*model
 		return nil, err
 	}
 
-	facts, err := SubjectFactsFrom(party)
+	facts, err := d.factsFrom(party)
 	if err != nil {
 		d.log.Warn("inbox.rejected", "reason", "incomplete_party", "caller", string(subject), "error", err.Error())
 		return nil, ErrValidation.WithMessage("%s", err.Error())
 	}
-	if !d.countrySupported(facts.Country) {
+	// The jurisdiction gate only bites on a party that named a
+	// jurisdiction. A registry-backed provider always has one by the
+	// time it gets here; one that consults no registry may not, and
+	// refusing it for a country nothing will be looked up in would
+	// turn away a subject over a fact the check never reads.
+	if !facts.Country.Empty() && !d.countrySupported(facts.Country) {
 		d.log.Warn("inbox.rejected", "reason", "country_unsupported", "caller", string(subject), "country", string(facts.Country))
 		// A policy refusal, not a malformed document (spec §8.3): the
 		// envelope is perfectly well formed and there is nothing the
@@ -199,9 +211,9 @@ func (d *Verifications) admit(ctx context.Context, env *gobl.Envelope) (goblnet.
 		return "", nil, ErrValidation.WithMessage("envelope failed validation: %s", err.Error())
 	}
 
-	// Party envelopes are bearer documents (spec §8.3): the subject is
-	// the address the party document itself declares, attested by a
-	// valid self-signature. The request token carries delivery intent,
+	// A party envelope carries no audience binding: the subject is the
+	// address the party document itself declares, attested by a valid
+	// self-signature (spec §5.1). The request token carries delivery intent,
 	// and the authority countersignature below is what gates
 	// eligibility.
 	subject, err := d.client.VerifyParty(ctx, env)
@@ -318,19 +330,15 @@ func (d *Verifications) resubmit(ctx context.Context, rec *models.Verification, 
 		)
 		return rec, nil
 
-	case rec.Status == models.StatusApproved || rec.Status == models.StatusDelivered || rec.Status == models.StatusDeliveryFailed:
+	case rec.Status == models.StatusVerified:
 		// The facts were verified and the result is still fresh:
 		// re-endorse the new envelope for free.
 		if rec.Decision == nil || now.Sub(rec.Decision.FetchedAt) > d.opts.KYBResultTTL {
 			d.log.Info("inbox.result_expired", "address", string(rec.Address))
 			return d.start(ctx, rec, rec.Address, factsFromModel(rec.Facts), env, email)
 		}
-		rec.Status = models.StatusApproved
-		if err := d.save(ctx, rec); err != nil {
+		if err := d.endorse(ctx, rec); err != nil {
 			return nil, err
-		}
-		if err := d.deliver(ctx, rec); err != nil {
-			return nil, ErrUnavailable.WithMessage("verification is valid but the result could not be delivered to the registration authority; retry later")
 		}
 		d.log.Info("inbox.reendorsed", "address", string(rec.Address), "envelope", rec.EnvelopeUUID.String())
 		return rec, nil
@@ -588,6 +596,46 @@ func (d *Verifications) HandleEvent(ctx context.Context, raw []byte, header http
 	return d.applyProviderStatus(ctx, rec, ev.Status, ev.At)
 }
 
+// Advance drives the case behind a provider reference forward by
+// asking the provider where its session now stands.
+//
+// It is how a provider without callbacks reports progress: the email
+// provider has no webhook to send, so the confirmation page calls this
+// once the subject has accepted. A vendor with callbacks uses
+// HandleEvent instead, and both funnel into the same guards.
+func (d *Verifications) Advance(ctx context.Context, reference string) error {
+	addr, attempt, err := parseReference(reference)
+	if err != nil {
+		return ErrNotFound.WithMessage("unknown verification reference")
+	}
+	rec, err := d.store.Get(ctx, addr)
+	switch {
+	case errors.Is(err, repos.ErrNotFound):
+		return ErrNotFound.WithMessage("no verification for %s", addr)
+	case err != nil:
+		return ErrInternal.WithCause(err)
+	}
+	if rec.Attempt != attempt {
+		// A link from a superseded attempt. Nothing to do, and
+		// nothing worth telling the holder about it.
+		d.log.Info("advance.superseded", "address", string(addr), "reference", reference)
+		return nil
+	}
+	if rec.Status.Terminal() {
+		return nil
+	}
+	if rec.Provider.ID == "" {
+		return ErrValidation.WithMessage("verification for %s has no provider session", addr)
+	}
+
+	dec, err := d.provider.Decision(ctx, rec.Provider.ID)
+	if err != nil {
+		d.log.Warn("advance.decision_failed", "address", string(addr), "error", err.Error())
+		return ErrUnavailable.WithMessage("could not read the verification result; try again shortly")
+	}
+	return d.applyProviderStatus(ctx, rec, dec.Status, dec.DecidedAt)
+}
+
 // applyProviderStatus moves a case in response to a provider verdict,
 // whether it arrived by callback or by polling. Both paths funnel
 // through here so the guards cannot be bypassed by whichever one
@@ -711,7 +759,7 @@ func (d *Verifications) settle(ctx context.Context, rec *models.Verification) er
 	// Re-derive the facts from the envelope about to be signed rather
 	// than trusting the ones stored when the session opened. This is
 	// what closes the swap: open a check with clean company details,
-	// substitute a different party while it runs, collect an
+	// substitute a different party while it runs, and be handed an
 	// endorsement for a company nobody verified.
 	facts, err := d.currentFacts(rec)
 	if err != nil {
@@ -735,6 +783,27 @@ func (d *Verifications) settle(ctx context.Context, rec *models.Verification) er
 			return err
 		}
 		d.alertOps(ctx, rec, "the party document changed while its verification was running")
+		return nil
+	}
+
+	// The match check is what turns "a company was verified" into
+	// "this company was verified", and it only means that when the
+	// provider resolved the registry record itself. A provider that
+	// consults no registry can only hand back what the subject
+	// declared, so comparing the two would be this service checking
+	// the party's claims against the party's claims — a check that
+	// cannot fail, recorded as though it had passed. Skip it, and let
+	// what the provider actually confirmed stand on its own.
+	if !d.provider.Requires().RegistryFacts {
+		d.log.Info("match.skipped",
+			"address", string(rec.Address),
+			"session", rec.Provider.ID,
+			"provider", string(d.provider.Name()),
+		)
+		if err := d.endorse(ctx, rec); err != nil {
+			return err
+		}
+		d.notifyVerified(ctx, rec)
 		return nil
 	}
 
@@ -763,24 +832,134 @@ func (d *Verifications) settle(ctx context.Context, rec *models.Verification) er
 		return nil
 	}
 
-	rec.Status = models.StatusApproved
-	rec.ApprovedAt = &now
-	rec.LastError = ""
-	if err := d.save(ctx, rec); err != nil {
-		return err
-	}
 	d.log.Info("match.passed",
 		"address", string(rec.Address),
 		"session", rec.Provider.ID,
 		"matched_on", report.MatchedOn,
 		"name_score", report.NameScore,
 	)
-
-	if err := d.deliver(ctx, rec); err != nil {
-		return nil // recorded on the case; the reconciler retries
+	if err := d.endorse(ctx, rec); err != nil {
+		return err
 	}
-	d.notifyApproved(ctx, rec)
+	d.notifyVerified(ctx, rec)
 	return nil
+}
+
+// endorse countersigns the stored envelope and returns it to the
+// subject.
+//
+// The endorsement goes back the way it came: a party envelope
+// delivered to the subject's inbox, the same route the subject used
+// to send it here. The subject then re-registers it with the
+// authority, which auto-verifies on any valid countersignature from a
+// trusted verifier regardless of who delivered it — so this needs
+// nothing of the authority at all.
+func (d *Verifications) endorse(ctx context.Context, rec *models.Verification) error {
+	now := time.Now().UTC()
+	env, err := d.countersignedCopy(rec)
+	if err != nil {
+		rec.Status = models.StatusError
+		rec.LastError = err.Error()
+		d.log.Error("endorse.countersign_failed", "address", string(rec.Address), "error", err.Error())
+		if perr := d.save(ctx, rec); perr != nil {
+			d.log.Error("endorse.persist_failed", "address", string(rec.Address), "error", perr.Error())
+		}
+		return ErrInternal.WithCause(err)
+	}
+	rec.Countersigned = env
+	rec.Status = models.StatusVerified
+	rec.VerifiedAt = &now
+	rec.LastError = ""
+	rec.NextPollAt = nil
+	if err := d.save(ctx, rec); err != nil {
+		return err
+	}
+	d.log.Info("endorse.issued",
+		"address", string(rec.Address),
+		"envelope", rec.EnvelopeUUID.String(),
+	)
+	return d.deliver(ctx, rec)
+}
+
+// deliver returns the endorsement to the subject's inbox.
+//
+// This is the contract, not a courtesy. The endorsement is a party
+// envelope and the subject is a party with an inbox, so handing it
+// back is the same ordinary delivery the subject used to send it
+// here — no second well-known endpoint, no polling, and nothing for
+// the subject to implement that being on the network did not already
+// require.
+//
+// A failure is recorded and retried by the reconciler rather than
+// failing the caller. By this point the check has been paid for and
+// the countersignature exists; an unreachable inbox is a fact about
+// the subject's host, not a reason to undo any of that. When the
+// retries run out the case keeps its endorsement and the operators
+// are told — and the subject re-submitting is what asks for it again,
+// which costs nothing because a verified case re-endorses for free.
+func (d *Verifications) deliver(ctx context.Context, rec *models.Verification) error {
+	if rec.Countersigned == nil {
+		return ErrInternal.WithMessage("verification has no endorsement to deliver")
+	}
+	now := time.Now().UTC()
+	rec.Delivery.Attempts++
+	rec.Delivery.LastAttemptAt = &now
+
+	sendCtx, cancel := context.WithTimeout(ctx, deliveryTimeout)
+	defer cancel()
+	err := d.client.Send(sendCtx, rec.Address, rec.Countersigned)
+	if err == nil {
+		rec.Delivery.At = &now
+		rec.Delivery.LastError = ""
+		rec.Delivery.Abandoned = false
+		rec.NextPollAt = nil
+		d.log.Info("endorse.delivered",
+			"address", string(rec.Address),
+			"attempts", rec.Delivery.Attempts,
+		)
+		return d.save(ctx, rec)
+	}
+
+	rec.Delivery.LastError = err.Error()
+	// The inbox decided rather than failed. gobl/net draws this line
+	// for us: a 4xx other than 429 is ErrInboxRejected, and re-sending
+	// an identical envelope to an inbox that has already refused it
+	// only produces the same refusal more slowly.
+	if errors.Is(err, goblnet.ErrInboxRejected) {
+		rec.Delivery.Abandoned = true
+		rec.NextPollAt = nil
+		d.log.Error("endorse.delivery_refused",
+			"address", string(rec.Address),
+			"error", err.Error(),
+		)
+		if perr := d.save(ctx, rec); perr != nil {
+			return perr
+		}
+		d.alertOps(ctx, rec, "the subject's inbox refused the endorsement: "+err.Error())
+		return nil
+	}
+	if rec.Delivery.Attempts >= maxDeliveryAttempts {
+		rec.Delivery.Abandoned = true
+		rec.NextPollAt = nil
+		d.log.Error("endorse.delivery_abandoned",
+			"address", string(rec.Address),
+			"attempts", rec.Delivery.Attempts,
+			"error", err.Error(),
+		)
+		if perr := d.save(ctx, rec); perr != nil {
+			return perr
+		}
+		d.alertOps(ctx, rec, "the endorsement could not be delivered to the subject's inbox: "+err.Error())
+		return nil
+	}
+
+	d.schedule(rec, now.Add(deliveryRetry))
+	d.log.Warn("endorse.delivery_failed",
+		"address", string(rec.Address),
+		"attempts", rec.Delivery.Attempts,
+		"error", err.Error(),
+	)
+	return d.save(ctx, rec)
 }
 
 // fetchDecision retrieves and stores the provider's verdict. The raw
@@ -833,7 +1012,17 @@ func (d *Verifications) currentFacts(rec *models.Verification) (SubjectFacts, er
 	if !ok || party == nil {
 		return SubjectFacts{}, errors.New("stored envelope no longer contains an org.Party")
 	}
-	return SubjectFactsFrom(party)
+	return d.factsFrom(party)
+}
+
+// factsFrom derives the subject facts this verifier's provider works
+// from: the strict registry tuple when the provider looks companies
+// up, and whatever the party declares when it does not.
+func (d *Verifications) factsFrom(party *org.Party) (SubjectFacts, error) {
+	if d.provider.Requires().RegistryFacts {
+		return SubjectFactsFrom(party)
+	}
+	return DeclaredFactsFrom(party)
 }
 
 // Reconcile drives cases the provider has stopped talking to us about.
@@ -876,11 +1065,18 @@ func (d *Verifications) reconcileOne(ctx context.Context, rec *models.Verificati
 	}
 
 	switch rec.Status {
-	case models.StatusApproved, models.StatusDeliveryFailed:
-		return d.deliver(ctx, rec)
-
 	case models.StatusMatching:
 		return d.settle(ctx, rec)
+
+	case models.StatusVerified:
+		// The checks are done and the endorsement is signed; all that
+		// is left is handing it over. Nothing here re-signs, so a
+		// retry never extends the endorsement's life.
+		if rec.Delivery.Pending() {
+			return d.deliver(ctx, rec)
+		}
+		rec.NextPollAt = nil
+		return d.save(ctx, rec)
 
 	case models.StatusError:
 		// An unconfirmed session create may already have been billed,
@@ -923,53 +1119,6 @@ func (d *Verifications) reconcileOne(ctx context.Context, rec *models.Verificati
 		return err
 	}
 	return d.applyProviderStatus(ctx, rec, dec.Status, dec.DecidedAt)
-}
-
-// deliver countersigns the stored envelope and POSTs it to the
-// authority's inbox.
-func (d *Verifications) deliver(ctx context.Context, rec *models.Verification) error {
-	now := time.Now().UTC()
-	env, err := d.countersignedCopy(rec)
-	if err != nil {
-		rec.Status = models.StatusDeliveryFailed
-		rec.LastDeliveryError = err.Error()
-		d.schedule(rec, now.Add(pollRetry))
-		d.log.Error("deliver.countersign_failed", "address", string(rec.Address), "error", err.Error())
-		if perr := d.save(ctx, rec); perr != nil {
-			d.log.Error("deliver.persist_failed", "address", string(rec.Address), "error", perr.Error())
-		}
-		return err
-	}
-
-	rec.DeliveryAttempts++
-	rec.LastDeliveryAt = &now
-	sendCtx, cancel := context.WithTimeout(ctx, deliveryTimeout)
-	defer cancel()
-	if err := d.sender.Send(sendCtx, d.opts.Authority, env); err != nil {
-		rec.Status = models.StatusDeliveryFailed
-		rec.LastDeliveryError = err.Error()
-		d.schedule(rec, now.Add(pollRetry))
-		d.log.Warn("deliver.failed",
-			"address", string(rec.Address),
-			"envelope", rec.EnvelopeUUID.String(),
-			"attempts", rec.DeliveryAttempts,
-			"error", err.Error(),
-		)
-		if perr := d.save(ctx, rec); perr != nil {
-			d.log.Error("deliver.persist_failed", "address", string(rec.Address), "error", perr.Error())
-		}
-		return err
-	}
-
-	rec.Status = models.StatusDelivered
-	rec.DeliveredAt = &now
-	rec.LastDeliveryError = ""
-	rec.NextPollAt = nil
-	d.log.Info("deliver.sent", "address", string(rec.Address), "envelope", rec.EnvelopeUUID.String())
-	if err := d.save(ctx, rec); err != nil {
-		d.log.Error("deliver.persist_failed", "address", string(rec.Address), "error", err.Error())
-	}
-	return nil
 }
 
 // countersignedCopy countersigns a fresh copy of the stored envelope.
@@ -1091,21 +1240,20 @@ func (d *Verifications) Find(ctx context.Context, addr goblnet.Address) (*models
 	return rec, nil
 }
 
-// Redeliver re-countersigns and delivers an approved case — the
-// recovery path when delivery to the authority failed.
-func (d *Verifications) Redeliver(ctx context.Context, addr goblnet.Address, actor string) (*models.Verification, error) {
+// Reissue countersigns a verified case again, replacing the stored
+// endorsement with one carrying a fresh expiry. The recovery path for
+// an endorsement that lapsed, or one nobody could be handed.
+func (d *Verifications) Reissue(ctx context.Context, addr goblnet.Address, actor string) (*models.Verification, error) {
 	rec, err := d.Find(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
-	switch rec.Status {
-	case models.StatusApproved, models.StatusDelivered, models.StatusDeliveryFailed:
-	default:
-		return nil, ErrValidation.WithMessage("verification for %s is %s, not approved", addr, rec.Status)
+	if rec.Status != models.StatusVerified {
+		return nil, ErrValidation.WithMessage("verification for %s is %s, not verified", addr, rec.Status)
 	}
-	rec.RecordOperatorAction("redeliver", actor, "")
-	if err := d.deliver(ctx, rec); err != nil {
-		return nil, ErrInternal.WithCause(err)
+	rec.RecordOperatorAction("reissue", actor, "")
+	if err := d.endorse(ctx, rec); err != nil {
+		return nil, err
 	}
 	return rec, nil
 }
@@ -1133,18 +1281,12 @@ func (d *Verifications) Approve(ctx context.Context, addr goblnet.Address, actor
 		return nil, ErrValidation.WithMessage("a reason is required to release a held verification")
 	}
 
-	now := time.Now().UTC()
-	rec.Status = models.StatusApproved
-	rec.ApprovedAt = &now
 	rec.RecordOperatorAction("approve", actor, reason)
-	if err := d.save(ctx, rec); err != nil {
+	d.log.Info("verification.operator_approved", "address", string(addr), "actor", actor, "reason", reason)
+	if err := d.endorse(ctx, rec); err != nil {
 		return nil, err
 	}
-	d.log.Info("verification.operator_approved", "address", string(addr), "actor", actor, "reason", reason)
-	if err := d.deliver(ctx, rec); err != nil {
-		return nil, ErrInternal.WithCause(err)
-	}
-	d.notifyApproved(ctx, rec)
+	d.notifyVerified(ctx, rec)
 	return rec, nil
 }
 
@@ -1194,7 +1336,7 @@ func (d *Verifications) Resend(ctx context.Context, addr goblnet.Address, actor 
 // case status, so only genuine contradictions are alerted on.
 func sameOutcome(caseStatus models.Status, s provider.Status) bool {
 	switch caseStatus {
-	case models.StatusDelivered:
+	case models.StatusVerified:
 		return s == provider.StatusApproved
 	case models.StatusDeclined:
 		return s == provider.StatusDeclined

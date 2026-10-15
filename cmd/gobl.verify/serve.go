@@ -11,9 +11,9 @@ import (
 
 	"github.com/invopop/gobl"
 
-	"github.com/invopop/gobl.kyb/internal/config"
-	"github.com/invopop/gobl.kyb/internal/domain"
-	"github.com/invopop/gobl.kyb/internal/interfaces/web"
+	"github.com/invopop/gobl.verify/internal/config"
+	"github.com/invopop/gobl.verify/internal/domain"
+	"github.com/invopop/gobl.verify/internal/interfaces/web"
 )
 
 // reconcileBatch bounds how many cases one reconciliation pass moves,
@@ -25,8 +25,8 @@ func serveCmd() *cobra.Command {
 	cfg := config.FromEnv()
 	cmd := &cobra.Command{
 		Use:   "serve",
-		Short: "Start the KYB verification HTTP server",
-		Long: `Run the KYB verification server. Loads the identity from
+		Short: "Start the verifier HTTP server",
+		Long: `Run the verifier. Loads the identity from
 --config-dir, connects to CouchDB, and serves the standard GOBL Net
 well-known endpoints, the provider callback, and the /status/<token>
 page behind the emailed links.
@@ -83,12 +83,11 @@ behind a reverse proxy that handles TLS termination.`,
 
 			errCh := make(chan error, 1)
 			go func() {
-				slog.Info("GOBL KYB listening",
+				slog.Info("GOBL Verify listening",
 					"addr", addr,
 					"domain", string(setup.Identity().Address()),
 					"authority", string(setup.Verifications().Authority()),
 					"public_base_url", setup.PublicBaseURL(),
-					"webhook_path", setup.WebhookPath(),
 					"provider", cfg.Provider,
 					"payment_mode", cfg.PaymentMode,
 					"couchdb", cfg.CouchDBRedacted(),
@@ -124,7 +123,7 @@ behind a reverse proxy that handles TLS termination.`,
 	cmd.Flags().StringVar(&cfg.SMTPHost, "smtp-host", cfg.SMTPHost, "SMTP submission host; empty logs emails instead of sending (env SMTP_HOST)")
 	cmd.Flags().IntVar(&cfg.SMTPPort, "smtp-port", cfg.SMTPPort, "SMTP submission port (env SMTP_PORT)")
 	cmd.Flags().StringVar(&cfg.SMTPUsername, "smtp-username", cfg.SMTPUsername, "SMTP username; empty skips authentication (env SMTP_USERNAME)")
-	cmd.Flags().StringVar(&cfg.EmailFrom, "email-from", cfg.EmailFrom, `From header of verification emails, e.g. "GOBL KYB <kyb@gobl.org>" (env EMAIL_FROM)`)
+	cmd.Flags().StringVar(&cfg.EmailFrom, "email-from", cfg.EmailFrom, `From header of verification emails, e.g. "GOBL Verify <verify@example.org>" (env EMAIL_FROM)`)
 	return cmd
 }
 

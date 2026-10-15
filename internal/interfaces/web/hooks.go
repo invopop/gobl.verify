@@ -6,12 +6,25 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/invopop/gobl.kyb/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain"
 )
 
 // webhookMaxBody caps the callback body. Provider decisions are
 // verbose but nowhere near this.
 const webhookMaxBody = 256 << 10 // 256 KiB
+
+// CallbackProvider is a provider whose vendor pushes status updates to
+// a URL, rather than being asked. It declares the route it wants, and
+// verifies the payload's signature inside ParseEvent — so this layer
+// never learns how any particular vendor signs.
+//
+// A provider that reports progress by being asked instead (the email
+// one, or anything driven by a confirmation page) implements nothing
+// here and gets no route.
+type CallbackProvider interface {
+	// CallbackPath is the route to register, e.g. "/webhooks/acme".
+	CallbackPath() string
+}
 
 // handleWebhook receives provider callbacks.
 //

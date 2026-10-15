@@ -1,9 +1,9 @@
-// gobl.kyb is a KYB verification provider for GOBL Net. It accepts
-// registered party envelopes on the standard `/inbox` endpoint, runs a
-// real business verification through an external provider, checks that
-// what the provider verified is actually the party in the envelope,
-// and — only then — countersigns that envelope and posts it back to
-// the registration authority's `/inbox`. Cases are backed by CouchDB.
+// gobl.verify is a reference implementation of a GOBL Net verifier. It
+// accepts registered party envelopes on the standard `/inbox` endpoint,
+// runs whatever check the configured provider performs, establishes
+// that what the provider verified is actually the party in the
+// envelope, and — only then — countersigns that envelope and holds the
+// result to the subject. Cases are backed by CouchDB.
 package main
 
 import (
@@ -21,7 +21,7 @@ import (
 
 	"github.com/invopop/gobl"
 
-	"github.com/invopop/gobl.kyb/internal/config"
+	"github.com/invopop/gobl.verify/internal/config"
 )
 
 var (
@@ -46,8 +46,8 @@ func run() error {
 func rootCmd() *cobra.Command {
 	opts := &rootOpts{}
 	cmd := &cobra.Command{
-		Use:   "gobl.kyb",
-		Short: "KYB verification provider for GOBL Net",
+		Use:   "gobl.verify",
+		Short: "A GOBL Net verifier",
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
 			slog.SetDefault(newLogger(opts.jsonLogs))
 			return nil
@@ -59,7 +59,7 @@ func rootCmd() *cobra.Command {
 	cmd.AddCommand(serveCmd())
 	cmd.AddCommand(statusCmd())
 	cmd.AddCommand(resyncCmd())
-	cmd.AddCommand(redeliverCmd())
+	cmd.AddCommand(reissueCmd())
 	cmd.AddCommand(resendCmd())
 	cmd.AddCommand(approveCmd())
 	cmd.AddCommand(rejectCmd())

@@ -1,6 +1,6 @@
 //go:build mage
 
-// Mage targets for gobl.kyb. Run via `mage <target>`.
+// Mage targets for gobl.verify. Run via `mage <target>`.
 package main
 
 import (
@@ -30,7 +30,7 @@ func Check() error {
 	return TestRace()
 }
 
-// Build compiles the gobl.kyb binary into ./bin.
+// Build compiles the gobl.verify binary into ./bin.
 func Build() error {
-	return sh.RunV("go", "build", "-o", "./bin/gobl.kyb", "./cmd/gobl.kyb")
+	return sh.RunV("go", "build", "-o", "./bin/gobl.verify", "./cmd/gobl.verify")
 }

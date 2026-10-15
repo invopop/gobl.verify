@@ -10,14 +10,13 @@ import (
 	"github.com/invopop/gobl"
 	goblnet "github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.kyb/internal/config"
-	"github.com/invopop/gobl.kyb/internal/domain"
-	"github.com/invopop/gobl.kyb/internal/domain/delivery"
-	"github.com/invopop/gobl.kyb/internal/domain/mailer"
-	"github.com/invopop/gobl.kyb/internal/domain/provider"
-	"github.com/invopop/gobl.kyb/internal/domain/provider/didit"
-	"github.com/invopop/gobl.kyb/internal/domain/provider/mock"
-	"github.com/invopop/gobl.kyb/internal/domain/repos"
+	"github.com/invopop/gobl.verify/internal/config"
+	"github.com/invopop/gobl.verify/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain/mailer"
+	"github.com/invopop/gobl.verify/internal/domain/provider"
+	"github.com/invopop/gobl.verify/internal/domain/provider/email"
+	"github.com/invopop/gobl.verify/internal/domain/provider/mock"
+	"github.com/invopop/gobl.verify/internal/domain/repos"
 )
 
 // buildDomain wires the domain setup from configuration: it loads the
@@ -52,7 +51,12 @@ func buildDomain(ctx context.Context, cfg config.Config) (*domain.Setup, func(),
 		return nil, nil, gobl.ErrInternal.WithCause(err)
 	}
 
-	prov, err := buildProvider(cfg)
+	publicBaseURL := strings.TrimRight(cfg.PublicBaseURL, "/")
+	if publicBaseURL == "" {
+		publicBaseURL = "https://" + string(id.Address())
+	}
+
+	prov, err := buildProvider(cfg, publicBaseURL)
 	if err != nil {
 		_ = store.Close()
 		return nil, nil, err
@@ -70,20 +74,18 @@ func buildDomain(ctx context.Context, cfg config.Config) (*domain.Setup, func(),
 		// The client trusts exactly the configured registration
 		// authority; incoming envelopes must carry its countersignature.
 		// Client and sender authenticate outbound requests as the
-		// verifier itself (bearer request tokens, spec §5.5).
+		// verifier itself (bearer request tokens, spec §6).
 		Client: goblnet.NewClient(
 			goblnet.WithIdentity(id.Address(), id.PrivateKey),
 			goblnet.WithAuthorities(authority),
 		),
-		Sender:   delivery.New(id.Address(), id.PrivateKey),
 		Mailer:   buildMailer(cfg),
 		Provider: prov,
 		Payments: payments,
 		Options: domain.Options{
 			Authority: authority,
 			// domain.New defaults this to https://<domain> when empty.
-			PublicBaseURL:      strings.TrimRight(cfg.PublicBaseURL, "/"),
-			WebhookPath:        cfg.DiditWebhookPath,
+			PublicBaseURL:      publicBaseURL,
 			SupportedCountries: cfg.SupportedCountries,
 			Match: domain.MatchPolicy{
 				NameThreshold:            cfg.MatchNameThreshold,
@@ -105,26 +107,20 @@ func buildDomain(ctx context.Context, cfg config.Config) (*domain.Setup, func(),
 	return setup, cleanup, nil
 }
 
-// buildProvider selects the KYB provider implementation.
-func buildProvider(cfg config.Config) (provider.Provider, error) {
+// buildProvider selects the verification provider.
+//
+// This is the whole of the vendor seam: a new provider is a package
+// implementing provider.Provider and a case here. Nothing else in the
+// service changes, which is the point of shipping only a reference
+// implementation — the interesting work for anyone adopting this is
+// writing one of these, not reading the rest.
+func buildProvider(cfg config.Config, publicBaseURL string) (provider.Provider, error) {
 	switch cfg.Provider {
 	case config.ProviderMock:
-		// Never in production: config.Validate refuses an http base
-		// URL for a real provider, but nothing stops an operator
-		// pointing this one at a live deployment, so it says so
-		// loudly.
-		slog.Warn("using the mock KYB provider: no real checks will be performed (set PROVIDER=didit)")
+		slog.Warn("using the mock provider: no checks of any kind will be performed")
 		return mock.New(), nil
-	case config.ProviderDidit:
-		return didit.New(didit.Config{
-			BaseURL:               cfg.DiditBaseURL,
-			APIKey:                cfg.DiditAPIKey,
-			WorkflowID:            cfg.DiditWorkflowID,
-			WebhookSecret:         cfg.DiditWebhookSecret,
-			WebhookSecretPrevious: cfg.DiditWebhookSecretPrevious,
-			ClockSkew:             cfg.WebhookClockSkew,
-			Timeout:               cfg.DiditTimeout,
-		})
+	case config.ProviderEmail:
+		return email.New(email.Config{PublicBaseURL: publicBaseURL})
 	default:
 		return nil, gobl.ErrInput.WithReason("unknown provider %q", cfg.Provider)
 	}

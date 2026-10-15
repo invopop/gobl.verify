@@ -7,93 +7,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- Initial implementation of the live GOBL Net KYB verifier. It receives a
-  registered party envelope on the standard inbox, runs a business
-  verification through Didit, and countersigns the envelope back to
-  `lookup.gobl.org` when — and only when — the company the provider
-  verified is established to be the party in the envelope.
-
-- A **match check** between the provider's decision and the party
-  (`internal/domain/match.go`). An approval from a KYB vendor is evidence
-  that some real company was checked, not that it was this one: the hosted
-  flow's pre-filled search fields stay editable and an analyst may change
-  them during review. Country, identifier, legal form and registry status
-  are compared strictly; the legal name is compared with tolerance and, when
-  it alone falls short, the case is held for an operator rather than
-  declined. Auto-declining on a fuzzy name would burn the customer's money
-  on a check that actually succeeded. The full comparison is stored on every
-  outcome — a countersignature is a public claim, and its justification has
-  to outlive the process that made it.
-
-- A **facts fingerprint** (`internal/domain/facts.go`) keyed on the legal
-  name, registry country, tax code and registration number — the tuple that
-  is sent to the provider and checked on its return. Session re-use is keyed
-  on this rather than on the envelope digest, because the registration
-  authority drops a party's verifier claim whenever the envelope changes at
-  all: without it, a customer correcting a phone number would buy another
-  KYB check. Tax-only country codes (`EL`, `XI`, `XU`) are normalised to
-  their ISO equivalents, since registries are indexed by ISO.
-
-- A **provider seam** (`internal/domain/provider`) with a Didit
-  implementation and a mock. The mock is not a convenience: every real
-  provider bills per check, so the tests that matter most — re-submission,
-  session re-use, the cost ceiling — are exactly the ones that would
-  otherwise cost money to run.
-
-- A **reconciler** that polls the provider for cases it has gone quiet
-  about. Callbacks are retried twice and then dropped forever, and a case
-  under analyst review may produce none for days, so without it a
-  verification the customer has already paid for can be silently lost.
-
-- Operator commands (`status`, `resync`, `redeliver`, `resend`, `approve`,
-  `reject`), each recording who ran it and why.
-
 ### Changed
 
-- Inbox rejections now follow spec §8.3's split between the two kinds of
-  refusal, so a caller can act on the status rather than only on the
-  message. **`403`** is "this verifier will not act on this envelope" —
-  unregistered, an uncovered jurisdiction, a decline still in cooldown,
-  too many attempts, a case held for an operator — and nothing the
-  subject edits changes the answer. **`422`** is "the document is missing
-  something verification needs", which re-registering a corrected party
-  fixes. An unsupported registry country was previously `422`, which said
-  the envelope was malformed when it was perfectly well formed; a case
-  held for review was `409`, which is not one of the statuses the spec
-  gives the inbox at all.
+- **Providers now declare what they need.** `Provider.Requires()` returns a
+  `Requirements`, whose `RegistryFacts` field says whether the provider looks
+  the company up in a company registry. The domain reads it at the inbox and
+  again after a decision.
 
-  Both are decided synchronously, before a provider session exists, so a
-  caller learns immediately and nothing has been billed. The `403` for an
-  uncovered jurisdiction names the countries that *are* covered, so
-  whoever drives the submission can say something more useful than "no".
+  Before this, every submission had to publish a legal name, a registry
+  country and a tax or legal identity, whatever the configured provider did
+  with them — so the email reference check refused parties it could have
+  verified perfectly well, and refused the very parties the sandbox service
+  it replaces accepts today. Those requirements belong to a registry lookup,
+  not to verification as such.
 
-### Security
+  It also fixes something quieter. The match check compares what the party
+  claims against what the provider resolved, and that is only evidence when
+  the provider resolved it independently. A provider that consults no
+  registry can only echo the subject's own declaration back, so running the
+  check compared the party's claims with the party's claims — a comparison
+  that cannot fail — and filed the result as a passed match. It is now
+  skipped, and such a case carries no match report at all. The envelope-swap
+  guard is unaffected: the facts are still re-derived from the envelope about
+  to be signed, so a party that changed under a running check is still never
+  countersigned.
 
-- Provider callbacks are authenticated by an HMAC over the vendor's
-  canonical form of the payload, verified in constant time against a set of
-  secrets so rotation costs no downtime, with a freshness window on the
-  dispatch timestamp and a create-only event ledger for idempotency. The
-  canonicalisation preserves original number text, leaves `<`, `>` and `&`
-  unescaped and keeps non-ASCII literal — getting any of those wrong
-  rejects every live callback while passing tests written against our own
-  encoder.
+- Renamed from `gobl.kyb` to **`gobl.verify`**, and reframed from a service
+  Invopop operates into the reference implementation a network member runs.
+  "KYB" overstated it: a verifier is whoever vouches, and what they check is
+  theirs to define and publish.
 
-- Before countersigning, the verifiable facts are re-derived from the
-  envelope about to be signed and compared with the ones that were checked.
-  This closes the swap: open a session with clean company details,
-  substitute a different party while it runs, collect an endorsement for a
-  company nobody verified.
+- **The endorsement goes back through the inbox.** When the checks pass, the
+  verifier countersigns the envelope and delivers it to the subject's own
+  inbox — the same ordinary `POST /.well-known/gobl/inbox` the subject used
+  to reach it. The subject then registers it with the authority itself.
 
-- Envelopes arriving with more than 24 signatures are refused. `gobl` caps
-  verification at 32 and every round-trip appends one, so producing the
-  signature that crosses the line would leave the party holding an
-  endorsement nobody can verify.
+  This needs no change to the authority. `acceptedVerifier` scans an
+  envelope's signatures for one issued by a trusted verifier and has no
+  notion of who delivered it, so a subject re-registering with a
+  countersignature aboard auto-verifies exactly as before.
 
-- Session creation is never retried automatically. A create call that fails
-  without saying whether a session exists may already have been billed.
+  An earlier draft of this had the subject *collect* the endorsement from a
+  new `GET /.well-known/gobl/verification` endpoint. That was a mistake: it
+  invented a transport for a document the protocol already knows how to
+  move. A party envelope delivered to a party's inbox is the most ordinary
+  thing on the network, every subject already has an inbox, and a verifier
+  that publishes no route of its own has no protocol surface to get wrong.
+  A verifier that wants to expose progress to its own customers can, but
+  that is its product, not the specification's business.
 
-- Messages to the subject never repeat the registry data the provider
-  returned, or name the comparison that failed. The detail goes to the
-  operators instead.
+  `delivered` and `delivery_failed` do not come back as statuses. Delivery
+  is tracked beside the verification status, not inside it: "did we
+  endorse?" and "did they receive it?" have different owners, and conflating
+  them made a verified case whose push failed read as unverified. A failed
+  send is retried by the reconciler, a refusal (`ErrInboxRejected`) is
+  final, and when retries run out the case keeps its endorsement and alerts
+  an operator. The subject's own recovery is to re-submit, which re-endorses
+  and re-delivers for free.
+
+  `redeliver` becomes `reissue`: the recovery path for an endorsement that
+  lapsed, not a delivery retry — those happen on their own.
+
+- **The reconciler's CouchDB view and its in-memory twin now share one
+  predicate.** They had drifted: the view's allowlist still named `approved`
+  and `delivery_failed`, which no longer exist, and omitted `error`, so
+  errored cases were never swept in production while the tests swept them
+  fine. Both now derive from `Verification.NeedsReconcile`, and the view is
+  written as a terminal-status denylist so a new status cannot be silently
+  dropped from the queue again.
+
+### Removed
+
+- **The Didit adapter.** An unused vendor integration in a reference
+  implementation is worse than none: it reads as "this is how it is done"
+  while nobody exercises it, and we found three bugs in that one during the
+  single week we did. The vendor knowledge belongs where the vendor is
+  actually used. What was transferable is now in the README, as prose, where
+  it cannot rot.
+
+### Added
+
+- **An email provider** as the reference check: confirm control of the
+  party's published address, record a declaration. It is deliberately the
+  whole of one implementation — read it end to end and you have seen every
+  moving part a verifier needs.
+
+  It reports its company data as applicant-sourced, because that is what it
+  is. Claiming otherwise would have the match check compare the party
+  against itself and call that corroboration.
+
+- `ConfirmingProvider` and `CallbackProvider`, so a provider can contribute
+  a page or a callback route without the transport layer knowing anything
+  about any particular vendor.
+
+- `Advance`, the entry point for a provider that reports progress by being
+  asked rather than by calling back.

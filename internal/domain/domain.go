@@ -1,9 +1,9 @@
-// Package domain handles the business logic for the KYB verification
-// service: accepting registered party envelopes from the registration
-// authority's subjects, running a real KYB check through an external
-// provider, deciding whether what the provider verified is actually the
-// party in the envelope, and — only then — countersigning that envelope
-// and delivering it back to the authority's inbox.
+// Package domain handles the business logic for the verifier:
+// accepting registered party envelopes from the registration
+// authority's subjects, running whatever check the configured provider
+// performs, deciding whether what that provider verified is actually
+// the party in the envelope, and — only then — countersigning that
+// envelope and returning the result to the subject.
 //
 // Setup wires the repositories and domain services together and is the
 // single object handed to the transport adapters in interfaces/.
@@ -15,10 +15,9 @@ import (
 
 	goblnet "github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.kyb/internal/domain/delivery"
-	"github.com/invopop/gobl.kyb/internal/domain/mailer"
-	"github.com/invopop/gobl.kyb/internal/domain/models"
-	"github.com/invopop/gobl.kyb/internal/domain/provider"
+	"github.com/invopop/gobl.verify/internal/domain/mailer"
+	"github.com/invopop/gobl.verify/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/provider"
 )
 
 // Deps bundles the constructed resources handed to New. The transport
@@ -33,8 +32,6 @@ type Deps struct {
 	// countersignatures (FetchKey + crypto). It must be constructed
 	// with the Authority as its only trusted authority.
 	Client *goblnet.Client
-	// Sender delivers the countersigned envelope to the authority.
-	Sender delivery.Sender
 	// Mailer sends the notification emails.
 	Mailer mailer.Mailer
 	// Provider performs the KYB checks.
@@ -58,7 +55,6 @@ type Setup struct {
 	identity      *Identity
 	verifications *Verifications
 	publicBaseURL string
-	webhookPath   string
 }
 
 // New prepares the domain setup from its constructed dependencies.
@@ -76,14 +72,10 @@ func New(d Deps) *Setup {
 	if opts.PublicBaseURL == "" {
 		opts.PublicBaseURL = "https://" + string(s.identity.Address())
 	}
-	if opts.WebhookPath == "" {
-		opts.WebhookPath = "/webhooks/didit"
-	}
 	if opts.Match.NameThreshold == 0 {
 		opts.Match = DefaultMatchPolicy()
 	}
 	s.publicBaseURL = opts.PublicBaseURL
-	s.webhookPath = opts.WebhookPath
 
 	if d.Payments == nil {
 		d.Payments = NoopGate{}
@@ -92,7 +84,7 @@ func New(d Deps) *Setup {
 		opts.PaymentMode = d.Payments.Mode()
 	}
 
-	s.verifications = newVerifications(d.Verifications, s.identity, d.Client, d.Sender, d.Mailer, d.Provider, d.Payments, opts, d.Logger)
+	s.verifications = newVerifications(d.Verifications, s.identity, d.Client, d.Mailer, d.Provider, d.Payments, opts, d.Logger)
 	s.verifications.opsEmail = d.OpsAlertEmail
 	return s
 }
@@ -107,5 +99,7 @@ func (s *Setup) Verifications() *Verifications { return s.verifications }
 // emailed links and the provider callback.
 func (s *Setup) PublicBaseURL() string { return s.publicBaseURL }
 
-// WebhookPath returns the route the provider posts callbacks to.
-func (s *Setup) WebhookPath() string { return s.webhookPath }
+// Provider returns the configured KYB provider. The transport layer
+// needs it only to discover whether the provider contributes routes of
+// its own — a confirmation page, in the email provider's case.
+func (s *Setup) Provider() provider.Provider { return s.verifications.provider }

@@ -15,24 +15,24 @@ ARG VERSION=dev
 ARG DATE=
 RUN CGO_ENABLED=0 GOOS=linux go build \
         -ldflags="-s -w -X main.version=${VERSION} -X main.date=${DATE}" \
-        -o /out/gobl.kyb \
-        ./cmd/gobl.kyb
+        -o /out/gobl.verify \
+        ./cmd/gobl.verify
 
 FROM alpine:3.21
 
 # Links the ghcr.io package to this repository (and its visibility/permissions).
-LABEL org.opencontainers.image.source="https://github.com/invopop/gobl.kyb"
+LABEL org.opencontainers.image.source="https://github.com/invopop/gobl.verify"
 
 RUN apk add --no-cache ca-certificates tzdata && adduser -D -u 1000 gobl
 
-COPY --from=builder /out/gobl.kyb /usr/local/bin/gobl.kyb
+COPY --from=builder /out/gobl.verify /usr/local/bin/gobl.verify
 
 USER gobl
 WORKDIR /home/gobl
 
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/gobl.kyb"]
+ENTRYPOINT ["/usr/local/bin/gobl.verify"]
 # Port, CouchDB, identity dir, etc. all come from the environment
 # (see README "Configuration"); the listen port defaults to 8080.
 CMD ["serve"]

@@ -9,7 +9,7 @@ import (
 
 	"github.com/invopop/gobl"
 
-	"github.com/invopop/gobl.kyb/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain"
 )
 
 // handleInbox processes a verification request: the subject's

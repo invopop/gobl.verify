@@ -1,11 +1,12 @@
-// Package web is the HTTP transport adapter for the KYB verification
-// service. It exposes the standard GOBL Net well-known endpoints
-// (inbox / who / keys / jwks), the provider callback, and the
-// human-facing status page behind the emailed link.
+// Package web is the HTTP transport adapter for the verifier. It
+// exposes the standard GOBL Net well-known endpoints (inbox / who /
+// keys / jwks), the inbox registered subjects submit to, and
+// whatever routes the configured provider contributes — a confirmation
+// page, a callback, or neither.
 //
 // Three different authentication schemes meet here, and they are not
 // interchangeable. The who and inbox endpoints take a bearer request
-// token (spec §5.5), because their callers are GOBL Net participants.
+// token (spec §6), because their callers are GOBL Net participants.
 // Key discovery is open, so that verifying a token never recurses. The
 // provider callback carries no token at all — a KYB vendor cannot mint
 // one — and is authenticated by the payload signature its own package
@@ -23,7 +24,7 @@ import (
 
 	goblnet "github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.kyb/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain"
 )
 
 // inboxMaxBody caps the request body read by the inbox handler.
@@ -42,7 +43,11 @@ func NewMux(setup *domain.Setup, log *slog.Logger) http.Handler {
 	mux.HandleFunc("GET "+goblnet.WhoPath, requireAuth(setup, log, handleWho(setup, log)))
 	mux.HandleFunc("GET "+goblnet.KeysPath+"/{kid}", handleKey(setup, log))
 	mux.HandleFunc("GET "+goblnet.JWKSPath, handleJWKS(setup, log))
-	mux.HandleFunc("POST "+setup.WebhookPath(), handleWebhook(setup, log))
+	if cb, ok := setup.Provider().(CallbackProvider); ok {
+		mux.HandleFunc("POST "+cb.CallbackPath(), handleWebhook(setup, log))
+	}
+	mux.HandleFunc("GET /confirm/{token}", handleConfirmPage(setup, log))
+	mux.HandleFunc("POST /confirm/{token}", handleConfirmSubmit(setup, log))
 	mux.HandleFunc("GET /status/{token}", handleStatus(setup, log))
 	mux.HandleFunc("GET /healthz", handleHealth())
 

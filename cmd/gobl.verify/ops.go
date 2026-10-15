@@ -12,8 +12,8 @@ import (
 	"github.com/invopop/gobl"
 	goblnet "github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.kyb/internal/config"
-	"github.com/invopop/gobl.kyb/internal/domain"
+	"github.com/invopop/gobl.verify/internal/config"
+	"github.com/invopop/gobl.verify/internal/domain"
 )
 
 // The operator commands.
@@ -144,19 +144,19 @@ off.`,
 	return cmd
 }
 
-func redeliverCmd() *cobra.Command {
+func reissueCmd() *cobra.Command {
 	cfg := config.FromEnv()
 	var who string
 	cmd := &cobra.Command{
-		Use:   "redeliver <address>",
-		Short: "Re-deliver an approved verification to the registration authority",
-		Long: `Countersign a fresh copy of the stored envelope (iss=<verifier>,
-aud=<address>, a long exp) and POST it to the registration authority's
-/inbox.
+		Use:   "reissue <address>",
+		Short: "Issue a verified case a fresh endorsement",
+		Long: `Countersign the stored envelope again, replacing the endorsement
+with one carrying a fresh expiry.
 
-Delivery happens automatically when a verification passes; this is the
-recovery path for when it did not land. It is safe to repeat: the
-authority treats a redelivery of the same digest as a renewal.`,
+The new endorsement is delivered to the subject's inbox like any
+other. Use this for an endorsement that lapsed, or one whose delivery
+was abandoned after the subject's inbox stayed unreachable; an
+ordinary failed delivery is retried on its own and needs nothing.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			addr, err := goblnet.ParseAddress(args[0])
@@ -164,12 +164,12 @@ authority treats a redelivery of the same digest as a renewal.`,
 				return gobl.ErrInput.WithCause(err)
 			}
 			return withDomain(cmd.Context(), cfg, func(setup *domain.Setup) error {
-				rec, err := setup.Verifications().Redeliver(cmd.Context(), addr, actor(who))
+				rec, err := setup.Verifications().Reissue(cmd.Context(), addr, actor(who))
 				if err != nil {
 					return mapDomainErr(err)
 				}
-				_, _ = fmt.Fprintf(stdOut(cmd), "delivered verification of %s to %s (envelope %s)\n",
-					addr, setup.Verifications().Authority(), rec.EnvelopeUUID)
+				_, _ = fmt.Fprintf(stdOut(cmd), "reissued the endorsement for %s (envelope %s)\n",
+					addr, rec.EnvelopeUUID)
 				return nil
 			})
 		},

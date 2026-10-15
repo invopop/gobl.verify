@@ -8,7 +8,7 @@ import (
 
 	goblnet "github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.kyb/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain"
 )
 
 // requesterKey is the context key under which requireAuth stores the
@@ -22,7 +22,7 @@ func requesterFrom(ctx context.Context) goblnet.Address {
 	return addr
 }
 
-// requireAuth verifies the bearer request token (spec §5.5) on every
+// requireAuth verifies the bearer request token (spec §6) on every
 // request before handing off to next, rejecting failures with 401.
 // The auth.rejected / handler log entries carrying the requester
 // address double as the request audit log.

@@ -16,9 +16,9 @@ import (
 	"github.com/invopop/gobl/org"
 	"github.com/invopop/gobl/tax"
 
-	"github.com/invopop/gobl.kyb/internal/domain"
-	"github.com/invopop/gobl.kyb/internal/domain/models"
-	"github.com/invopop/gobl.kyb/internal/domain/provider"
+	"github.com/invopop/gobl.verify/internal/domain"
+	"github.com/invopop/gobl.verify/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/provider"
 )
 
 func TestInboxOpensASessionForARegisteredParty(t *testing.T) {
@@ -51,7 +51,7 @@ func TestInboxPrefillsTheProviderSearch(t *testing.T) {
 	assert.Equal(t, "ES", string(req.Subject.Country))
 	assert.Equal(t, "B12345674", req.Subject.TaxCode)
 	assert.Equal(t, "alice@example.com", req.ContactEmail)
-	assert.Equal(t, "https://kyb.example/webhooks/didit", req.CallbackURL)
+	assert.Equal(t, "https://kyb.example/webhooks/mock", req.CallbackURL)
 	assert.Equal(t, string(f.subAddr), req.Subject.Context["gobl_address"])
 }
 
@@ -248,8 +248,8 @@ func TestReEndorsementAfterApprovalIsFree(t *testing.T) {
 	f := newFixture(t)
 	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(f.newParty())).StatusCode)
 	require.Equal(t, http.StatusOK, f.approve(verifiedCompany()).StatusCode)
-	require.Equal(t, models.StatusDelivered, f.record().Status)
-	require.Len(t, f.sender.records(), 1)
+	require.Equal(t, models.StatusVerified, f.record().Status)
+	require.Len(t, f.endorsements(), 1)
 
 	edited := f.newParty(func(p *org.Party) {
 		p.Websites = []*org.Website{{URL: "https://acme.example"}}
@@ -257,9 +257,18 @@ func TestReEndorsementAfterApprovalIsFree(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, f.submit(f.registeredEnvelope(edited)).StatusCode)
 
 	assert.Equal(t, 1, f.provider.Sessions(), "no new check")
-	sent := f.sender.records()
-	require.Len(t, sent, 2, "the edited envelope is countersigned and delivered again")
-	assert.Equal(t, models.StatusDelivered, f.record().Status)
+	assert.Equal(t, models.StatusVerified, f.record().Status)
+
+	// The endorsement is reissued over the newer envelope and handed
+	// over again, so the subject ends up holding one that covers what
+	// it currently publishes.
+	sent := f.endorsements()
+	require.Len(t, sent, 2, "the reissued endorsement is delivered too")
+	latest := f.lastEndorsement()
+	require.NotNil(t, latest.Head.Digest)
+	assert.Equal(t, f.record().EnvelopeDigest,
+		string(latest.Head.Digest.Algorithm)+":"+latest.Head.Digest.Value,
+		"the endorsement covers the party's current document")
 }
 
 // A decline is not retryable by re-posting the same company details.
@@ -339,4 +348,88 @@ func TestResubmissionFinishesACaseThatNeverOpenedASession(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 	assert.Equal(t, 1, f.provider.Sessions())
 	assert.Equal(t, models.StatusSessionOpen, f.record().Status)
+}
+
+// A provider that consults no registry — the email reference check,
+// which is what the sandbox runs — asks nothing of the party beyond
+// the email address it is about to write to. Demanding a tax identity
+// it will never look up turns away subjects the check would have
+// worked on perfectly well, and the service this one replaces on the
+// sandbox network admitted exactly these parties.
+func TestRegistrylessProviderAdmitsAPartyWithoutRegistryFacts(t *testing.T) {
+	f := newFixture(t)
+	f.provider.Requirements = provider.Requirements{}
+
+	resp := f.submit(f.registeredEnvelope(f.newParty(func(p *org.Party) {
+		p.TaxID = nil
+	})))
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	rec := f.record()
+	assert.Equal(t, models.StatusSessionOpen, rec.Status)
+	assert.Equal(t, 1, f.provider.Sessions())
+
+	req, ok := f.provider.Request(rec.Provider.ID)
+	require.True(t, ok)
+	assert.Equal(t, "alice@example.com", req.ContactEmail,
+		"the one fact this provider does need must still reach it")
+	assert.Empty(t, req.Subject.TaxCode)
+	assert.Empty(t, string(req.Subject.Country))
+}
+
+// The email address is the check itself here, so its absence is still
+// fatal — leniency about registry facts is not leniency about
+// everything.
+func TestRegistrylessProviderStillNeedsAnEmail(t *testing.T) {
+	f := newFixture(t)
+	f.provider.Requirements = provider.Requirements{}
+
+	resp := f.submit(f.registeredEnvelope(f.newParty(func(p *org.Party) {
+		p.TaxID = nil
+		p.Emails = nil
+	})))
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Zero(t, f.provider.Sessions())
+}
+
+// Publishing no country is an absent fact the lenient path tolerates.
+// Publishing one that cannot be resolved is a malformed document, and
+// storing a fingerprint over it would be recording a country that
+// means nothing — so that is still refused either way.
+func TestRegistrylessProviderStillRefusesAnUnusableCountry(t *testing.T) {
+	f := newFixture(t)
+	f.provider.Requirements = provider.Requirements{}
+
+	resp := f.submit(f.registeredEnvelope(f.newParty(func(p *org.Party) {
+		p.TaxID = &tax.Identity{Country: "EU", Code: "12345"}
+	})))
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Zero(t, f.provider.Sessions())
+}
+
+// The jurisdiction allowlist is about where a registry lookup works,
+// so it has nothing to say about a party that named no jurisdiction
+// and a provider that looks nothing up.
+func TestRegistrylessProviderIgnoresTheCountryAllowlistWhenNoCountryIsNamed(t *testing.T) {
+	f := newFixture(t, func(o *domain.Options) {
+		o.SupportedCountries = []string{"PT", "FR"}
+	})
+	f.provider.Requirements = provider.Requirements{}
+
+	resp := f.submit(f.registeredEnvelope(f.newParty(func(p *org.Party) {
+		p.TaxID = nil
+	})))
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+}
+
+// A registry-backed provider is unchanged: without the facts a lookup
+// needs there is nothing to look up, and finding that out after the
+// check has been paid for is finding out too late.
+func TestRegistryProviderStillDemandsTheFacts(t *testing.T) {
+	f := newFixture(t)
+	resp := f.submit(f.registeredEnvelope(f.newParty(func(p *org.Party) {
+		p.TaxID = nil
+	})))
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Zero(t, f.provider.Sessions())
 }

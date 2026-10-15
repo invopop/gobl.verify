@@ -15,14 +15,15 @@ import (
 	"github.com/invopop/gobl/head"
 	goblnet "github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.kyb/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/models"
 )
 
 // DefaultEndorsementTTL is the lifetime of every verifier
 // countersignature this service issues, carried as the signed `exp`
-// claim. Verifier signatures are deliberately long-lived — in the
-// spirit of EV TLS certificates (spec §5.3) — since the verification
-// they attest to is independent of the registration cycle.
+// claim (spec §5). Verifier signatures are deliberately long-lived: an
+// identity check is independent of the registration cycle, so there is
+// no reason to re-run a registry lookup on the authority's 90-day
+// clock.
 //
 // It is configurable (ENDORSEMENT_TTL) rather than fixed, because the
 // right answer early in a service's life is shorter than the right
@@ -73,7 +74,7 @@ func (d *Identity) JWKS() ([]byte, error) { return d.model.JWKS() }
 func (d *Identity) PublicKeys() []*dsig.PublicKey { return d.model.PublicKeys }
 
 // VerifyRequest verifies the Authorization header of an inbound who
-// or inbox request (a bearer request token, spec §5.5) and returns
+// or inbox request (a bearer request token, spec §6) and returns
 // the verified requester address. The token's audience must be this
 // verifier and its freshness window must include the current time.
 func (d *Identity) VerifyRequest(ctx context.Context, header string) (goblnet.Address, error) {
@@ -103,15 +104,19 @@ func (d *Identity) PartyEnvelope() ([]byte, error) {
 // CounterSign adds a fresh verifier countersignature to env: iss =
 // this verifier, aud = the subject whose identity was verified, and a
 // long-lived exp (endorsementTTL). No `verifier` claim — that pointer
-// is the registration authority's to set (spec §5.3). The envelope's
+// is the registration authority's to write (spec §7.1). The envelope's
 // UUID and Digest are unchanged — only the Signatures slice grows.
 func (d *Identity) CounterSign(env *gobl.Envelope, subject goblnet.Address) error {
 	if env == nil || env.Head == nil {
 		return errors.New("identity: cannot countersign a nil envelope")
 	}
 	// Supersede earlier rounds: the fresh countersignature replaces
-	// any of this verifier's own (spec §5.3). Other parties'
-	// signatures are never touched.
+	// any of this verifier's own. The spec has no rule about this —
+	// it only requires that every signature be searched and that
+	// order carry no meaning (§5) — so leaving the old ones would be
+	// conforming but dishonest: two of our signatures over one
+	// envelope say we attested twice, when we attested once and
+	// renewed it. Other parties' signatures are never touched.
 	sigs := make([]*dsig.Signature, 0, len(env.Signatures)+1)
 	for _, sig := range env.Signatures {
 		if p, err := head.SignedPayload(sig); err == nil {

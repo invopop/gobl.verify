@@ -1,5 +1,5 @@
 # Local development helper. Brings up CouchDB so `go run
-# ./cmd/gobl.kyb serve --couchdb http://admin:pass@localhost:5984`
+# ./cmd/gobl.verify serve --couchdb http://admin:pass@localhost:5984`
 # can connect without further setup.
 
 services:

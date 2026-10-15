@@ -11,7 +11,7 @@ import (
 	"github.com/invopop/gobl"
 	"github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.kyb/internal/domain/repos"
+	"github.com/invopop/gobl.verify/internal/domain/repos"
 )
 
 type initOpts struct {
@@ -34,7 +34,7 @@ convention:
     party.json
     keys/<kid>.json
 
-After init, run "gobl.kyb serve" pointing at the same
+After init, run "gobl.verify serve" pointing at the same
 --config-dir to start the verification service.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -64,7 +64,7 @@ After init, run "gobl.kyb serve" pointing at the same
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&opts.configDir, "config-dir", "", "base directory for the verifier identity (default ~/.config/gobl.kyb/<domain>)")
+	cmd.Flags().StringVar(&opts.configDir, "config-dir", "", "base directory for the verifier identity (default ~/.config/gobl.verify/<domain>)")
 	cmd.Flags().StringVar(&opts.name, "name", "", "party name to seed into party.json")
 	cmd.Flags().BoolVarP(&opts.force, "force", "f", false, "overwrite an existing non-empty directory")
 	return cmd
@@ -77,7 +77,7 @@ After init, run "gobl.kyb serve" pointing at the same
 func defaultConfigDir(domain string) string {
 	home, err := os.UserConfigDir()
 	if err != nil || home == "" {
-		return filepath.Join(".config", "gobl.kyb", domain)
+		return filepath.Join(".config", "gobl.verify", domain)
 	}
-	return filepath.Join(home, "gobl.kyb", domain)
+	return filepath.Join(home, "gobl.verify", domain)
 }

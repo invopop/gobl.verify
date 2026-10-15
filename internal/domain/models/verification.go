@@ -38,15 +38,12 @@ const (
 	// stack so a process that dies mid-check leaves a case the
 	// reconciler can pick up, instead of an approval nobody acts on.
 	StatusMatching Status = "matching"
-	// StatusApproved means the provider approved and the match
-	// passed. A countersignature is owed to the authority.
-	StatusApproved Status = "approved"
-	// StatusDelivered means the countersigned envelope was accepted
-	// by the authority's inbox.
-	StatusDelivered Status = "delivered"
-	// StatusDeliveryFailed means the case was approved but delivery
-	// did not land. Retryable, and retried.
-	StatusDeliveryFailed Status = "delivery_failed"
+	// StatusVerified means the provider approved, the match passed,
+	// and the envelope has been countersigned. It is terminal for the
+	// verification — nothing about the checks can change after it —
+	// but handing the endorsement over may still be outstanding, which
+	// Delivery tracks separately.
+	StatusVerified Status = "verified"
 	// StatusDeclined means the provider refused the company.
 	StatusDeclined Status = "declined"
 	// StatusMismatch means the provider approved a company that is not
@@ -67,7 +64,7 @@ const (
 // after a decline without an operator saying so.
 func (s Status) Terminal() bool {
 	switch s {
-	case StatusDelivered, StatusDeclined, StatusMismatch, StatusExpired:
+	case StatusVerified, StatusDeclined, StatusMismatch, StatusExpired:
 		return true
 	}
 	return false
@@ -178,10 +175,11 @@ type Verification struct {
 	// operators and for the match check.
 	Facts SubjectFacts `json:"facts"`
 
-	// Envelope is the registered envelope as received, never mutated:
-	// every delivery countersigns a fresh copy. It is replaced by any
-	// later submission carrying the same facts, so the endorsement
-	// always lands on the party's current document.
+	// Envelope is the registered envelope as received, never mutated.
+	// It is replaced by any later submission carrying the same facts,
+	// so an endorsement is always issued over the party's current
+	// document, and it is what the facts are re-derived from before
+	// anything is signed.
 	Envelope       *gobl.Envelope `json:"envelope"`
 	EnvelopeUUID   uuid.UUID      `json:"envelope_uuid"`
 	EnvelopeDigest string         `json:"envelope_digest"`
@@ -217,13 +215,21 @@ type Verification struct {
 	// ReviewStartedAt stamps entry into analyst review, so a case
 	// stuck there can be nagged about.
 	ReviewStartedAt *time.Time `json:"review_started_at,omitempty"`
-	ApprovedAt      *time.Time `json:"approved_at,omitempty"`
 	DeclinedAt      *time.Time `json:"declined_at,omitempty"`
 
-	DeliveryAttempts  int        `json:"delivery_attempts,omitempty"`
-	LastDeliveryAt    *time.Time `json:"last_delivery_at,omitempty"`
-	LastDeliveryError string     `json:"last_delivery_error,omitempty"`
-	DeliveredAt       *time.Time `json:"delivered_at,omitempty"`
+	// Countersigned is the endorsement this service issued: the
+	// received envelope with our countersignature added, kept so a
+	// delivery can be retried without re-signing.
+	//
+	// It is stored rather than regenerated because an endorsement is
+	// one act with one lifetime. Re-signing on every send would mint a
+	// fresh expiry each time and quietly make the endorsement
+	// immortal.
+	Countersigned *gobl.Envelope `json:"countersigned,omitempty"`
+	// VerifiedAt is when the countersignature was issued.
+	VerifiedAt *time.Time `json:"verified_at,omitempty"`
+	// Delivery records the return of that endorsement to the subject.
+	Delivery Delivery `json:"delivery"`
 
 	// NextPollAt paces the reconciler, and ReconcileLeaseUntil keeps
 	// two replicas from working the same case at once.
@@ -233,6 +239,55 @@ type Verification struct {
 
 	// OperatorActions is the manual-intervention audit trail.
 	OperatorActions []OperatorAction `json:"operator_actions,omitempty"`
+}
+
+// Delivery records handing the endorsement back to the subject's
+// inbox.
+//
+// It is deliberately not a Status. "Did we endorse?" and "did they
+// receive it?" are different questions with different owners: the
+// first is settled by the checks and is this service's to answer, the
+// second depends on a host we do not run. Folding the second into the
+// first is what made the old delivered/delivery_failed states
+// awkward — a verified case whose push had failed read as though the
+// verification itself had not happened.
+type Delivery struct {
+	// At is when the endorsement was accepted by the subject's inbox.
+	// Nil means it has not been, yet or ever.
+	At *time.Time `json:"at,omitempty"`
+	// Attempts counts sends made, successful or not.
+	Attempts int `json:"attempts,omitempty"`
+	// LastAttemptAt is when the most recent send was made.
+	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
+	// LastError is why the most recent send failed, for the operator.
+	LastError string `json:"last_error,omitempty"`
+	// Abandoned reports that retries have been given up on. The
+	// endorsement is still valid and still stored; it simply could not
+	// be handed over, and the subject re-submitting is what asks for
+	// it again.
+	Abandoned bool `json:"abandoned,omitempty"`
+}
+
+// Pending reports whether an endorsement still has to reach the
+// subject.
+func (d Delivery) Pending() bool { return d.At == nil && !d.Abandoned }
+
+// NeedsReconcile reports whether the reconciler still has work for
+// this case.
+//
+// A case is either still being decided, or decided and endorsed but
+// not yet handed over. The second is why this is not simply
+// !Status.Terminal(): `verified` is terminal for the verification and
+// says nothing about whether the subject ever received the result.
+//
+// The CouchDB by_poll view has to mirror this exactly. The two having
+// drifted is a quiet way to lose work — a case the queue never yields
+// is a case nobody ever finishes.
+func (v *Verification) NeedsReconcile() bool {
+	if !v.Status.Terminal() {
+		return true
+	}
+	return v.Status == StatusVerified && v.Delivery.Pending()
 }
 
 // SubjectFacts mirrors domain.SubjectFacts for storage. It lives here

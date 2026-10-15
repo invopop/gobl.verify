@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/invopop/gobl.kyb/internal/domain/mailer"
+	"github.com/invopop/gobl.verify/internal/domain/mailer"
 )
 
 // fakeSMTP is a minimal in-process SMTP server (no TLS) that records

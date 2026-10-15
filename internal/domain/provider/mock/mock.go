@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/invopop/gobl.kyb/internal/domain/provider"
+	"github.com/invopop/gobl.verify/internal/domain/provider"
 )
 
 // Name identifies this provider.
@@ -45,6 +45,11 @@ type Provider struct {
 	// Default is returned by Decision for sessions with no scripted
 	// verdict.
 	Default provider.Decision
+	// Requirements is what Requires reports. It defaults to a
+	// registry-backed provider, so the match check stays exercised;
+	// set it to the zero value to drive the registry-less path the
+	// email reference check takes.
+	Requirements provider.Requirements
 }
 
 // New returns a mock provider whose sessions stay pending until a
@@ -54,11 +59,22 @@ func New() *Provider {
 		sessions:  make(map[string]provider.SessionRequest),
 		decisions: make(map[string]*provider.Decision),
 		Default:   provider.Decision{Status: provider.StatusPending},
+		Requirements: provider.Requirements{
+			RegistryFacts: true,
+		},
 	}
 }
 
 // Name identifies the implementation.
 func (p *Provider) Name() provider.Name { return Name }
+
+// Requires reports the scripted requirements.
+func (p *Provider) Requires() provider.Requirements { return p.Requirements }
+
+// CallbackPath makes the mock a callback-driven provider, so the
+// webhook route stays covered by the tests even though the only
+// provider shipped here reports progress by being asked.
+func (p *Provider) CallbackPath() string { return "/webhooks/mock" }
 
 // CreateSession records the request and hands back a session.
 func (p *Provider) CreateSession(_ context.Context, req provider.SessionRequest) (*provider.Session, error) {

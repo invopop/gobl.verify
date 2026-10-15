@@ -10,7 +10,7 @@ import (
 	"github.com/invopop/couch"
 	"github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.kyb/internal/domain/models"
+	"github.com/invopop/gobl.verify/internal/domain/models"
 )
 
 // Verifications is the case store, backed by a single CouchDB database
@@ -72,18 +72,30 @@ func verificationsDesign() *couch.Design {
 			}
 		}`,
 	})
-	// Cases still waiting on the provider, keyed by when they are next
-	// due a poll. A missing next_poll_at sorts first: a case that has
-	// never been scheduled is overdue by definition.
+	// The reconciler's work queue, keyed by when each case is next due.
+	// A missing next_poll_at sorts first: a case that has never been
+	// scheduled is overdue by definition.
+	//
+	// This MUST mirror models.Verification.NeedsReconcile. It is
+	// written as a terminal-status denylist rather than an allowlist of
+	// open ones for exactly that reason: an allowlist silently drops
+	// every status added after it was written, which is how this view
+	// came to be listing two statuses that no longer exist while
+	// missing `error`.
 	d.SetView(viewByPoll, &couch.View{
 		Map: `function(doc) {
 			if (doc._id.indexOf("verification:") !== 0) { return; }
-			var open = {
-				received: true, awaiting_payment: true, session_open: true,
-				in_review: true, matching: true, approved: true,
-				delivery_failed: true
+			var terminal = {
+				verified: true, declined: true, mismatch: true, expired: true
 			};
-			if (open[doc.status]) {
+			if (!terminal[doc.status]) {
+				emit(doc.next_poll_at || "", null);
+				return;
+			}
+			// Endorsed but not yet handed over: terminal for the
+			// verification, still outstanding for the subject.
+			var d = doc.delivery;
+			if (doc.status === "verified" && (!d || (!d.at && !d.abandoned))) {
 				emit(doc.next_poll_at || "", null);
 			}
 		}`,

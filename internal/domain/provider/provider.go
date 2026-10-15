@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/invopop/gobl/l10n"
@@ -157,6 +158,57 @@ type CompanyRecord struct {
 	IncorporatedAt *time.Time
 }
 
+// PersonSource records where a key person came from. It is the most
+// important field on a Person: a director the registry names is
+// evidence about the company, and one the applicant typed in is
+// evidence about nobody.
+type PersonSource string
+
+// Key person provenance.
+const (
+	// PersonSourceRegistry means the company registry disclosed them.
+	PersonSourceRegistry PersonSource = "registry"
+	// PersonSourceApplicant means the person completing the flow
+	// entered them.
+	PersonSourceApplicant PersonSource = "applicant"
+	// PersonSourceUnknown means the provider did not say. It is never
+	// treated as registry-sourced — anything that cannot be positively
+	// identified as coming from the registry counts as applicant data.
+	PersonSourceUnknown PersonSource = "unknown"
+)
+
+// Person is someone the provider associated with the company.
+type Person struct {
+	// Name as recorded.
+	Name string
+	// Source is where they came from.
+	Source PersonSource
+	// Roles they hold, in the provider's vocabulary (director, ubo,
+	// shareholder, authorized_signatory …).
+	Roles []string
+	// OwnershipPercent is their stake, when stated.
+	OwnershipPercent *float64
+	// RequiresVerification reports whether the workflow asked them to
+	// complete an identity check, and Skipped whether they were let
+	// out of it.
+	RequiresVerification bool
+	Skipped              bool
+	// KYCStatus is the outcome of that identity check.
+	KYCStatus Status
+}
+
+// HasRole reports whether the person holds any of the given roles.
+func (p Person) HasRole(roles ...string) bool {
+	for _, want := range roles {
+		for _, got := range p.Roles {
+			if strings.EqualFold(strings.TrimSpace(got), want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Decision is a provider's verdict on a session.
 type Decision struct {
 	// SessionID ties the decision to the session that produced it.
@@ -170,6 +222,9 @@ type Decision struct {
 	DecidedAt time.Time
 	// Company is the registry record the provider resolved.
 	Company CompanyRecord
+	// KeyPeople are the officers, owners and shareholders the provider
+	// associated with the company, each carrying where it got them.
+	KeyPeople []Person
 	// Reason is the provider's coarse explanation, mainly useful on a
 	// decline.
 	Reason string
@@ -199,10 +254,42 @@ type Event struct {
 	At time.Time
 }
 
+// Requirements describes what a provider needs from the subject's
+// party document, and what evidence its decisions carry back. The
+// domain reads it in two places: at the inbox, to admit only parties
+// the check can actually be run on, and after a decision, to know
+// whether there is anything independent to compare against.
+type Requirements struct {
+	// RegistryFacts reports that this provider looks the company up
+	// in a company registry.
+	//
+	// When true the subject must publish the detail such a lookup
+	// needs — a legal name, a registry country, and a tax or legal
+	// identity — and the decision carries a CompanyRecord the
+	// provider resolved independently, which the match check compares
+	// against what the party claimed. That comparison is what makes
+	// the countersignature worth anything.
+	//
+	// A provider that confirms something about the subject without
+	// consulting a registry leaves it false: the email reference
+	// check here, a signed mandate, or an operator's own records. Its
+	// decision can only echo back what the subject declared, and
+	// matching an echo proves nothing, so the domain skips the match
+	// check instead of running a comparison that cannot fail — and
+	// admits any registered party the check can be performed on,
+	// rather than demanding a tax code it will never look at.
+	RegistryFacts bool
+}
+
 // Provider performs KYB checks.
 type Provider interface {
 	// Name identifies the implementation.
 	Name() Name
+
+	// Requires reports what this provider needs from the subject and
+	// what its decisions carry back. It is read once at startup and
+	// must not vary between calls.
+	Requires() Requirements
 
 	// CreateSession opens a verification and returns the hosted flow
 	// handle.
