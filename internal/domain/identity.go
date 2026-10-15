@@ -20,9 +20,10 @@ import (
 
 // DefaultEndorsementTTL is the lifetime of every verifier
 // countersignature this service issues, carried as the signed `exp`
-// claim (spec §5). Verifier signatures are deliberately long-lived —
-// in the spirit of EV TLS certificates — since the verification they
-// attest to is independent of the registration cycle.
+// claim (spec §5). Verifier signatures are deliberately long-lived: an
+// identity check is independent of the registration cycle, so there is
+// no reason to re-run a registry lookup on the authority's 90-day
+// clock.
 //
 // It is configurable (ENDORSEMENT_TTL) rather than fixed, because the
 // right answer early in a service's life is shorter than the right

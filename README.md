@@ -1,17 +1,26 @@
 # gobl.verify
 
-A reference implementation of a **GOBL Net verifier** — the participant
-that establishes who is behind an address and countersigns their party
-envelope to say so.
+A reference implementation of a **GOBL Net verifier** — the participant that
+establishes which real-world organization is behind an address and
+countersigns their party envelope to say so. On a live network that means
+running a KYC/KYB process.
 
 > ⚠️ **EXPERIMENTAL** — GOBL Net is under active development and the wire
 > protocol may change without notice.
 
 GOBL Net splits trust in two. A **registration authority** confirms that a
-party controls its address. A **verifier** — which the spec requires to be a
-different participant — establishes who is *behind* it. Receivers want the
-second before they will accept what an address sends, so without a verifier
-an identity can receive but never send.
+party controls its address — which proves only that whoever registered the
+domain also published the keys there. A **verifier**, which the spec requires
+to be a different participant, establishes *who that is*: the organization
+behind the address, checked against a company registry and whatever else its
+policy demands. Receivers want the second before they will accept what an
+address sends, so without a verifier an identity can receive but never send.
+
+**It is not a certificate authority.** Web PKI already binds a key to a
+domain, and that is the layer underneath this one. A verifier binds an address
+to a legal identity, which is a different question answered with different
+evidence — a registry record and a director's documents, not a domain
+validation.
 
 This repository is what a verifier looks like. It ships one working check —
 confirming control of the party's published email address — and the seam to
